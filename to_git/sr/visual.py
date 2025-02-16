@@ -164,3 +164,5 @@ def plot_results(X, y_true, y_pred, title="Model Comparison"):
         plt.grid(True, alpha=0.3)
     
     plt.show()
+
+

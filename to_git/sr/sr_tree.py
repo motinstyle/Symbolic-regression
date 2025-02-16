@@ -4,17 +4,10 @@ import copy
 import matplotlib.pyplot as plt
 from nodes import *
 from typing import List, Union, Optional, Dict
-
+# from nsga_2 import non_dominated_sort, calculate_crowding_distance
+from parameters import *
 # global min_loss
 min_loss = float('inf')
-
-NUM_OF_EPOCHS = 100
-NUM_OF_MODELS = 70
-MAX_DEPTH = 10
-MUTATION_PROB = 0.25 # 0.15
-INV_ERROR_COEF = 0.7
-
-np.random.seed(2)
 
 def get_deepcopy(obj):
     return copy.deepcopy(obj)
@@ -140,13 +133,20 @@ class Tree:
         self.max_depth = max_depth
         self.mutation_prob = mutation_prob
         self.crossover_prob = crossover_prob
-        self.max_num_of_node = 0
+        
         self.error = 0
+        self.forward_loss = 0
+        self.inv_loss = 0
+        self.domain_loss = 0
+        self.max_num_of_node = 0
+
         self.num_vars = None  # Will be set during evaluation
         self.requires_grad = requires_grad
         self._set_requires_grad(requires_grad)
         self.grad = None
+        
         self.enumerate_tree()
+
 
     def _set_requires_grad(self, requires_grad: bool):
         """Recursively set requires_grad for all nodes"""
@@ -304,7 +304,12 @@ class Tree:
             inv_loss = self.eval_inv_error(data[np.random.choice(len(data), 100, replace=False)])
         else:
             inv_loss = 0
+
+        self.forward_loss = loss.item()
+        self.inv_loss = inv_loss
+        self.domain_loss = domain_penalty
         self.error = loss.item() + 10*self.max_num_of_node + inv_loss + domain_penalty
+
 
         # if self.requires_grad:
         #     inv_loss = self.eval_inv_error(data)
@@ -462,24 +467,30 @@ class Tree:
             
             if node.parity == 1:
                 inner = _build_expr(node.data[0])
-                if node.func.__name__ in ['exp_', 'sin_', 'cos_']:
-                    return f"{node.func.__name__[:-1]}({inner})"
-                return inner
+                # Handle all unary functions
+                func_name = node.func.__name__
+                if func_name.endswith('_'):  # Remove trailing underscore
+                    func_name = func_name[:-1]
+                return f"{func_name}({inner})"
             else:
                 left = _build_expr(node.data[0])
                 right = _build_expr(node.data[1])
                 
-                # Handle special cases for better readability
-                if node.func.__name__ == 'sum_':
+                # Handle binary operations with special formatting
+                func_name = node.func.__name__
+                if func_name == 'sum_':
                     return f"({left} + {right})"
-                elif node.func.__name__ == 'mult_':
+                elif func_name == 'mult_':
                     return f"({left} * {right})"
-                elif node.func.__name__ == 'div_':
+                elif func_name == 'div_':
                     return f"({left} / {right})"
-                elif node.func.__name__ == 'pow_':
+                elif func_name == 'pow_':
                     return f"({left} ^ {right})"
                 else:
-                    return f"{node.func.__name__[:-1]}({left}, {right})"
+                    # Remove trailing underscore for other binary functions
+                    if func_name.endswith('_'):
+                        func_name = func_name[:-1]
+                    return f"{func_name}({left}, {right})"
                 
         return _build_expr(self.start_node)
 
@@ -555,8 +566,8 @@ def crossover(p1: Tree, p2: Tree) -> Tree:
     # If no valid crossover found, return copy of parent1
     return child
 
-parity1 = [const_, ident_, exp_, sin_, cos_]
-parity2 = [sum_, mult_, div_, pow_]
+# parity1 = [const_, ident_, exp_, sin_, cos_]
+# parity2 = [sum_, mult_, div_, pow_]
 
 def mutation(tree: Tree):
     """Change random node according to its parity with multivariable support"""
@@ -615,10 +626,178 @@ def get_mean_error(models):
         suma += model.error
     return suma/len(models)
 
+def non_dominated_sort(models):
+    """
+    Perform non-dominated sorting of models based on their objectives.
+    Returns a list of fronts, where each front is a list of models.
+    """
+    if not models:
+        return []
+
+    fronts = [[]]  # Initialize with empty first front
+    for model in models:
+        model.domination_count = 0  # Number of models that dominate this model
+        model.dominated_models = []  # Models that this model dominates
+        
+        for other_model in models:
+            if model == other_model:
+                continue
+                
+            # Compare objectives (error and complexity)
+            if (model.forward_loss <= other_model.forward_loss and 
+                model.max_num_of_node <= other_model.max_num_of_node and
+                model.domain_loss <= other_model.domain_loss and
+                (model.forward_loss < other_model.forward_loss or 
+                 model.max_num_of_node < other_model.max_num_of_node or
+                 model.domain_loss < other_model.domain_loss)):
+                model.dominated_models.append(other_model)
+            elif (other_model.forward_loss <= model.forward_loss and 
+                  other_model.max_num_of_node <= model.max_num_of_node and
+                  other_model.domain_loss <= model.domain_loss and
+                  (other_model.forward_loss < model.forward_loss or 
+                   other_model.max_num_of_node < model.max_num_of_node or
+                   other_model.domain_loss < model.domain_loss)):
+                model.domination_count += 1
+        
+        if model.domination_count == 0:  # Model belongs to first front
+            fronts[0].append(model)
+    
+    if not fronts[0]:  # If no models in first front, return empty list
+        return []
+    
+    current_front = 0
+    while current_front < len(fronts):
+        next_front = []
+        for model in fronts[current_front]:
+            for dominated_model in model.dominated_models:
+                dominated_model.domination_count -= 1
+                if dominated_model.domination_count == 0:
+                    next_front.append(dominated_model)
+        
+        current_front += 1
+        if next_front:
+            fronts.append(next_front)
+    
+    return fronts
+
+def calculate_crowding_distance(front):
+    """
+    Calculate crowding distance for models in a front.
+    Modifies the models in place by setting their crowding_distance attribute.
+    """
+    if not front:
+        return
+    
+    num_models = len(front)
+    if num_models < 2:
+        front[0].crowding_distance = float('inf')
+        return
+    
+    # Initialize crowding distances
+    for model in front:
+        model.crowding_distance = 0
+    
+    # Calculate crowding distance for each objective
+    objectives = ['forward_loss', 'inv_loss', 'max_num_of_node', 'domain_loss']
+    
+
+    for objective in objectives:
+        # Sort front by the objective
+        front.sort(key=lambda x: getattr(x, objective))
+        
+        # Set infinite distance to boundary points
+        front[0].crowding_distance = float('inf')
+        front[-1].crowding_distance = float('inf')
+        
+        # Calculate crowding distance for intermediate points
+        obj_range = getattr(front[-1], objective) - getattr(front[0], objective)
+        if obj_range == 0:
+            obj_range = 1  # Avoid division by zero
+            
+        for i in range(1, num_models - 1):
+            distance = (getattr(front[i + 1], objective) - getattr(front[i - 1], objective)) / obj_range
+            front[i].crowding_distance += distance
+
+def model_selection(models, params=None):
+    """
+    Select models based on specified method and parameters.
+    
+    Args:
+        models: List of models to select from
+        method: Selection method ("top_k" or "NSGA-II")
+        params: Dictionary of parameters (population_size, etc.)
+    
+    Returns:
+        List of selected models
+    """
+    if not models:  # Handle empty input
+        return []
+        
+    if params is None:
+        params = {}
+    
+    population_size = params.get("population_size", 10)
+    
+    # Ensure we have valid models to work with
+    valid_models = [model for model in models if hasattr(model, 'error')]
+    if not valid_models:
+        return []
+    
+    method = params.get("method", "top_k")
+    # print(f"Method: {method}")
+
+    new_models = []
+    try:
+        if method == "top_k":
+            valid_models.sort(key=lambda x: x.error)
+            new_models = [safe_deepcopy(model) for model in valid_models[:population_size]]
+        
+        elif method == "NSGA-II":
+            # Step 1: Non-dominated sorting
+            fronts = non_dominated_sort(valid_models)
+            if not fronts:  # If sorting fails, fall back to top_k
+                valid_models.sort(key=lambda x: x.error)
+                return [safe_deepcopy(model) for model in valid_models[:population_size]]
+            
+            # Step 2: Calculate crowding distance for each front
+            for front in fronts:
+                calculate_crowding_distance(front)
+            
+            # Step 3: Select models based on non-domination rank and crowding distance
+            selected_models = []
+            front_idx = 0
+            
+            while len(selected_models) < population_size and front_idx < len(fronts):
+                current_front = fronts[front_idx]
+                # Sort by crowding distance within the front
+                current_front.sort(key=lambda x: x.crowding_distance, reverse=True)
+                
+                # Add models from current front
+                remaining_slots = population_size - len(selected_models)
+                selected_models.extend(current_front[:remaining_slots])
+                front_idx += 1
+            
+            new_models = [safe_deepcopy(model) for model in selected_models]
+    
+    except Exception as e:
+        print(f"Warning: Model selection failed with error: {str(e)}")
+        # Fall back to simple top_k selection
+        valid_models.sort(key=lambda x: x.error)
+        new_models = [safe_deepcopy(model) for model in valid_models[:population_size]]
+    
+    # Ensure we return at least one model
+    if not new_models and valid_models:
+        valid_models.sort(key=lambda x: x.error)
+        new_models = [safe_deepcopy(valid_models[0])]
+    
+    return new_models
 
 def evolution(num_of_epochs, models, training_data):
     """evolution process with crossover and mutation"""
-    mean_error_arr = np.zeros(NUM_OF_EPOCHS)
+    mean_error_arr = np.zeros(num_of_epochs)
+    best_model = safe_deepcopy(models[0])  # Initialize with first model
+    best_error = float('inf')
+    
     for epoch in range(num_of_epochs):
         print("EPOCH:", epoch)
         # Create new models list without copying tensors
@@ -628,39 +807,66 @@ def evolution(num_of_epochs, models, training_data):
             models_to_eval.append(new_model)
 
         for model in models:
-            for i in range(NUM_OF_MODELS//len(models) - 1):
+            for i in range(POPULATION_SIZE//len(models) - 1):
                 new_model = crossover(model, models[np.random.randint(0, len(models))])
-
-#TODO: rewrite this part to get rid of max_depth, add regularization for tree depth
                 while new_model.max_num_of_node > new_model.max_depth:
                     new_model = crossover(model, models[np.random.randint(0, len(models))])
                 models_to_eval.append(new_model)
 
         for model in models_to_eval:
-            # if np.random.random() < model.mutation_prob:
             if np.random.uniform() < model.mutation_prob:
                 mutation(model)
-            # if epoch >= int(NUM_OF_EPOCHS * INV_ERROR_COEF):
-            if epoch%5 == 0:
+            if epoch%5 == 0 and model.requires_grad:
                 model.eval_tree_error(training_data, inv_error=True)
             else:
                 model.eval_tree_error(training_data)
 
-        # Sort models by error and select top 10
-        models_to_eval.sort(key=lambda x: x.error)
-        models = []
-        for model in models_to_eval[:10]:
-            new_model = safe_deepcopy(model)
-            models.append(new_model)
+        # Model selection
+        params = {
+            "population_size": POPULATION_SIZE,
+            # "method": "NSGA-II"
+            "method": "top_k"
+        }
+        selected_models = model_selection(models_to_eval, params)
+
+        
+        # Ensure we always have models
+        if not selected_models:
+            print(f"No selected models, using {params['method']}")
+            models_to_eval.sort(key=lambda x: x.error)
+            models = [safe_deepcopy(model) for model in models_to_eval[:10]]
+        else:
+            models = selected_models
 
         mean_error = get_mean_error(models)
         mean_error_arr[epoch] = mean_error
+        
+        # Track best model
+        if models[0].error < best_error:
+            best_error = models[0].error
+            best_model = safe_deepcopy(models[0])
+        
         if (epoch + 1) % 10 == 0:
-            print(f"EPOCH: {epoch+1}/{NUM_OF_EPOCHS}")
-            # print("mean_error:", mean_error)
-            # print("best_error:", models[0].error)
+            print(f"EPOCH: {epoch+1}/{num_of_epochs}")
+            print(f"Current best error: {best_error:.6f}")
 
+    # Store error history and best error in the best model
+    best_model.error_history = mean_error_arr
+    # mse loss
+    best_model.min_loss = min_loss
+    # mse + inv + domain + depth loss
+    best_model.best_error = best_error
+    
+    # Optional: Plot error history
+    plt.figure(figsize=(10, 6))
     plt.plot(mean_error_arr)
-    plt.show()    
-    print("min_loss:", min_loss)
-    return models[0]
+    plt.title('Training Error History')
+    plt.xlabel('Epoch')
+    plt.ylabel('Error')
+    plt.grid(True)
+    plt.yscale('log')  # Use log scale for better visualization
+    plt.show()
+    
+    print(f"Final min_loss: {min_loss}")
+    print(f"Best error achieved: {best_error:.6f}")
+    return best_model

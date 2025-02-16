@@ -1,0 +1,21 @@
+==================================================
+Model Information
+==================================================
+
+Mathematical Expression:
+------------------------------
+x0
+
+Target Function:
+------------------------------
+log_plus_pow
+
+Model Structure:
+------------------------------
+Root: ident_0
+\--- x0
+
+Model Performance:
+------------------------------
+Final Error: 10.000000
+Minimum Loss: 0.000000
