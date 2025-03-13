@@ -4,11 +4,12 @@ import copy
 import matplotlib.pyplot as plt
 from nodes import *
 from typing import List, Union, Optional, Dict
-# from nsga_2 import non_dominated_sort, calculate_crowding_distance
 from parameters import *
-# global min_loss
-min_loss = float('inf')
 
+# global min_loss for the best model
+# min_loss = float('inf')
+
+# get deepcopy of an object
 def get_deepcopy(obj):
     return copy.deepcopy(obj)
 
@@ -25,18 +26,36 @@ class Node:
         self._cached_output = None  # Cache for forward pass
         self._cached_grad = None    # Cache for backward pass
         self.domain_penalty = 0
+        
         # Get function info if available
         self.func_info = get_function_info(func.__name__) if hasattr(func, '__name__') else None
 
+        # Initialize constants if required
+        if REQUIRES_CONST:
+            # Don't add constants for basic operators and const nodes
+            if (self.func_info and self.func_info.name not in ['add_', 'sub_', 'mul_', 'div_']):
+                # Random initialization of constants in range [-10, 10]
+                self.scale = torch.tensor([np.random.uniform(-10, 10)], requires_grad=requires_grad)  # Multiplicative constant
+                self.bias = torch.tensor([np.random.uniform(-10, 10)], requires_grad=requires_grad)   # Additive constant
+            else:
+                self.scale = 1
+                self.bias = 0
+        else:
+            self.scale = 1
+            self.bias = 0
+
+    # string representation of the node (type, parity, function name)
     def __str__(self):
         return f"{self.t_name} node: parity: {self.parity}, func: {self.func.__name__}"
 
+    # validate variable index is within bounds (less than num_vars)
     def validate_var_index(self, var_idx: int, num_vars: int) -> bool:
         """Validate that variable index is within bounds"""
         if var_idx >= num_vars:
             raise ValueError(f"Variable index {var_idx} is out of bounds for {num_vars} variables")
         return True
 
+    # evaluate node value for a given input
     def eval_node(self, varval=None, cache: bool = True):
         """Evaluate node with PyTorch tensors and optional gradient computation"""
         if varval is not None:
@@ -44,52 +63,42 @@ class Node:
                 varval = to_tensor(varval, requires_grad=self.requires_grad)
             if varval.dim() == 1:
                 varval = varval.reshape(-1, 1)
-            self.num_vars = varval.shape[1]
-        
-        if self.t_name == "ident":
-            result = to_tensor(self.data[0] if isinstance(self.data, (list, np.ndarray)) else self.data,
-                             requires_grad=False)  # Constants don't need gradients
-            result = result.expand(varval.shape[0])
-        elif self.t_name == "var":
+            
+        # Return cached result if available
+        if cache and self._cached_output is not None:
+            return self._cached_output
+
+        # Evaluate based on node type
+        if self.t_name == "var":
             if varval is None:
                 raise ValueError("Variable values must be provided for variable nodes")
-            
-            var_idx = self.data[0] if isinstance(self.data, list) else self.data
-            self.validate_var_index(var_idx, self.num_vars)
-            
-            result = varval[:, var_idx].clone()  # Clone to ensure we have a new tensor
-            if self.requires_grad:
-                result.requires_grad_(True)
-        else:
+            var_idx = self.data[0]
+            self.validate_var_index(var_idx, varval.shape[1])
+            result = varval[:, var_idx:var_idx+1]
+        elif self.t_name == "ident":
+            if isinstance(self.data, (int, float)):
+                result = torch.tensor([[float(self.data)]], dtype=torch.float32)
+            else:
+                result = self.data.reshape(1, -1)
+            result = result.repeat(varval.shape[0] if varval is not None else 1, 1)
+        else:  # Function node
             if self.parity == 1:
-                child_result = self.data[0].eval_node(varval=varval, cache=cache)
-                # Check domain constraints for unary functions
-                if isinstance(child_result, torch.Tensor) and self.func_info is not None:
-                    mask_min = child_result < self.func_info.domain_min
-                    mask_max = child_result > self.func_info.domain_max
-                    if mask_min.any() or mask_max.any():
-                        self.domain_penalty += torch.sum(torch.abs(torch.where(mask_min, self.func_info.domain_min - child_result, 0))) + \
-                                            torch.sum(torch.abs(torch.where(mask_max, child_result - self.func_info.domain_max, 0)))
+                child_result = self.data[0].eval_node(varval, cache)
                 result = self.func(child_result)
             else:
-                in1 = self.data[0].eval_node(varval=varval, cache=cache)
-                in2 = self.data[1].eval_node(varval=varval, cache=cache)
-                # Check domain constraints for binary functions
-                if isinstance(in1, torch.Tensor) and isinstance(in2, torch.Tensor) and self.func_info is not None:
-                    if hasattr(self.func_info, 'domain_min'):
-                        mask_min = (in1 < self.func_info.domain_min) | (in2 < self.func_info.domain_min)
-                        if mask_min.any():
-                            self.domain_penalty += torch.sum(torch.abs(torch.where(mask_min, self.func_info.domain_min - torch.minimum(in1, in2), 0)))
-                    if hasattr(self.func_info, 'domain_max'):
-                        mask_max = (in1 > self.func_info.domain_max) | (in2 > self.func_info.domain_max)
-                        if mask_max.any():
-                            self.domain_penalty += torch.sum(torch.abs(torch.where(mask_max, torch.maximum(in1, in2) - self.func_info.domain_max, 0)))
-                result = self.func(in1, in2)
+                left_result = self.data[0].eval_node(varval, cache)
+                right_result = self.data[1].eval_node(varval, cache)
+                result = self.func(left_result, right_result)
+
+        # Apply constants if required
+        if REQUIRES_CONST and isinstance(self.scale, torch.Tensor):
+            result = self.scale * result + self.bias
 
         if cache:
             self._cached_output = result
         return result
 
+    # calculate total domain penalty for the node
     def get_total_domain_penalty(self) -> float:
         """Recursively collect domain penalties from all nodes"""
         total_penalty = self.domain_penalty
@@ -99,6 +108,7 @@ class Node:
                     total_penalty += child.get_total_domain_penalty()
         return total_penalty
 
+    # reset domain penalties for all nodes for new generation
     def reset_domain_penalties(self):
         """Recursively reset domain penalties for all nodes"""
         self.domain_penalty = 0
@@ -107,28 +117,101 @@ class Node:
                 if isinstance(child, Node):
                     child.reset_domain_penalties()
 
-    # def get_gradients(self) -> Dict[int, torch.Tensor]:
-    #     """Get gradients for all variable nodes in the subtree"""
-    #     gradients = {}
-    #     if self.t_name == "var" and self.requires_grad:
-    #         var_idx = self.data[0] if isinstance(self.data, list) else self.data
-    #         if self._cached_output is not None and self._cached_output.grad is not None:
-    #             gradients[var_idx] = self._cached_output.grad.clone()
-    #     elif self.t_name not in ("ident",):
-    #         for child in self.data:
-    #             if isinstance(child, Node):
-    #                 child_grads = child.get_gradients()
-    #                 for idx, grad in child_grads.items():
-    #                     if idx in gradients and grad is not None:
-    #                         gradients[idx] = gradients[idx] + grad
-    #                     else:
-    #                         gradients[idx] = grad
-    #     return gradients
+    # convert node to mathematical expression string
+    def to_math_expr(self):
+        """Convert node to mathematical expression string"""
+        if self.t_name == "var":
+            expr = f"x{self.data[0]}"
+        elif self.t_name == "ident":
+            if REQUIRES_CONST:
+                expr = f"x{self.data[0]}" if isinstance(self.data[0], int) else "1"
+            else:
+                expr = str(float(self.data[0]) if isinstance(self.data, torch.Tensor) else self.data)
+        else:
+            if self.parity == 1:
+                child_expr = self.data[0].to_math_expr()
+                if self.func_info:
+                    expr = f"{self.func_info.name.replace('_', '')}({child_expr})"
+                else:
+                    expr = f"{self.func.__name__}({child_expr})"
+            else:
+                left_expr = self.data[0].to_math_expr()
+                right_expr = self.data[1].to_math_expr()
+                if self.func_info:
+                    op = self.func_info.name.replace('_', '')
+                    if op in ['add', 'sub']:
+                        expr = f"({left_expr} {op} {right_expr})"
+                    elif op == 'mul':
+                        expr = f"{left_expr} * {right_expr}"
+                    elif op == 'div':
+                        expr = f"({left_expr} / {right_expr})"
+                    else:
+                        expr = f"{op}({left_expr}, {right_expr})"
+                else:
+                    expr = f"{self.func.__name__}({left_expr}, {right_expr})"
 
+        # Add constants if required and they exist
+        if REQUIRES_CONST:# and isinstance(self.scale, torch.Tensor):
+            print("in to_math_expr REQUIRES_CONST:")
+            scale = self.scale.item()
+            bias = self.bias.item()
+            print("self.scale:", self.scale, "self.bias:", self.bias)
+            print("scale:", scale, "bias:", bias)
+            if scale != 1 or bias != 0:
+                if scale != 1:
+                    expr = f"{scale}*({expr})"
+                if bias != 0:
+                    expr = f"({expr} + {bias})"
+
+        return expr
+
+    # get all constants in the node and its children (for optimization)
+    def get_constants(self):
+        """Get all constants in the node and its children"""
+        constants = []
+        if REQUIRES_CONST and isinstance(self.scale, torch.Tensor):
+            constants.extend([self.scale, self.bias])
+        
+        if self.t_name == "func":
+            for child in self.data:
+                constants.extend(child.get_constants())
+        
+        return constants
+
+    # simplify the expression by combining constants where possible
+    def simplify(self):
+        """Simplify the expression by combining constants where possible"""
+        if not REQUIRES_CONST:
+            return
+            
+        if self.t_name == "func" and self.func_info:
+            # Recursively simplify children first
+            for child in self.data:
+                child.simplify()
+            
+            # Handle addition case
+            if self.func_info.name == 'add_':
+                left, right = self.data
+                # If both children have constants, combine them
+                if isinstance(left.scale, torch.Tensor) and isinstance(right.scale, torch.Tensor):
+                    # Combine like terms
+                    self.scale = left.scale + right.scale
+                    self.bias = left.bias + right.bias
+                    # Reset children's constants
+                    left.scale = 1
+                    left.bias = 0
+                    right.scale = 1
+                    right.bias = 0
+            #TODO: add other cases for simplification
 
 class Tree:
-    def __init__(self, start_node: Node, max_depth: int = 10, mutation_prob: float = 0.15,
-                 crossover_prob: float = 0.5, requires_grad: bool = False):
+    def __init__(self,
+                 start_node: Node,
+                 max_depth: int = MAX_DEPTH, 
+                 mutation_prob: float = MUTATION_PROB,
+                 crossover_prob: float = 0.5, 
+                 requires_grad: bool = False):
+        
         self.start_node = start_node
         self.max_depth = max_depth
         self.mutation_prob = mutation_prob
@@ -147,7 +230,7 @@ class Tree:
         
         self.enumerate_tree()
 
-
+    # recursively set requires_grad for all nodes
     def _set_requires_grad(self, requires_grad: bool):
         """Recursively set requires_grad for all nodes"""
         def _set_node_grad(node: Node):
@@ -158,20 +241,24 @@ class Tree:
                         _set_node_grad(child)
         _set_node_grad(self.start_node)
 
+    # string representation of the tree (start node, max number of nodes, error)
     def __str__(self):
         return f"start: ({self.start_node}), max num: {self.max_num_of_node}, error: {self.error}"
 
+    # calculate depth of tree/subtree starting at node
     def get_tree_depth(self, node: Node) -> int:
         """Calculate depth of tree/subtree starting at node"""
         if node.t_name in ("var", "ident"):
             return 0
         return 1 + max(self.get_tree_depth(child) for child in node.data if isinstance(child, Node))
 
+    # validate tree depth is within limits
     def validate_tree_depth(self) -> bool:
         """Check if tree depth is within limits"""
         depth = self.get_tree_depth(self.start_node)
         return depth <= self.max_depth
 
+    # get all variable indices used in the tree
     def get_var_indices(self, node: Optional[Node] = None) -> List[int]:
         """Get all variable indices used in the tree"""
         if node is None:
@@ -186,11 +273,13 @@ class Tree:
                     indices.extend(self.get_var_indices(child))
         return sorted(list(set(indices)))
 
+    # validate all variable indices in the tree
     def validate_var_indices(self, num_vars: int) -> bool:
         """Validate all variable indices in the tree"""
         indices = self.get_var_indices()
         return all(0 <= idx < num_vars for idx in indices)
 
+    # enumerate all nodes in the tree
     def enumerate_tree(self):
         cur_num = 0
         to_enum = [self.start_node]
@@ -204,6 +293,7 @@ class Tree:
                 to_enum.pop(to_enum.index(el))
         self.max_num_of_node = cur_num
 
+    # get node by node number
     def get_node_by_num(self, num, cp=False):
         to_check = [self.start_node]
         while len(to_check) > 0:
@@ -219,6 +309,7 @@ class Tree:
                 to_check.pop(to_check.index(el))
         print("ERROR: not found")
 
+    # change node with old_node_num to new_node
     def change_node(self, old_node_num, new_node):
         to_check = [self.start_node]
         while len(to_check) > 0:
@@ -236,6 +327,7 @@ class Tree:
                         to_check.append(d)
                 to_check.pop(to_check.index(el))
 
+    # forward pass with gradients if gradient is required (for inverse pass)
     def forward_with_gradients(self, varval: torch.Tensor, cache: bool = True):
         """
         Выполняет прямой проход для всего входного тензора и вычисляет градиенты для каждого входного вектора.
@@ -267,63 +359,123 @@ class Tree:
         # exit()
         return outputs
 
+    # forward pass (choose variant of forward pass based on requires_grad)
     def forward(self, varval=None, cache: bool = True):
         if self.requires_grad:
             return self.forward_with_gradients(varval=varval, cache=cache)
         return self.start_node.eval_node(varval=varval, cache=cache)
 
+    # optimize constants in the tree using Nelder-Mead method if REQUIRES_CONST is True
+    def optimize_constants(self, data: Union[np.ndarray, torch.Tensor], max_iter: int = 500) -> None:
+        """Optimize constants in the tree using Nelder-Mead method"""
+        if not REQUIRES_CONST:
+            return
+
+        # Convert data to numpy if it's a tensor
+        if isinstance(data, torch.Tensor):
+            data = data.detach().numpy()
+        
+        # Get all constants from the tree
+        constants = self.start_node.get_constants()
+        # print("constants:", constants)
+        if not constants:
+            return
+        
+        # Convert constants to numpy array for optimization
+        initial_params = np.array([const.item() for const in constants])
+        n_params = len(initial_params)
+        
+        def objective(params):
+            # Update constants in the tree
+            param_idx = 0
+            def update_constants(node):
+                nonlocal param_idx
+                if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
+                    node.scale = torch.tensor([params[param_idx]], dtype=torch.float32)
+                    param_idx += 1
+                    node.bias = torch.tensor([params[param_idx]], dtype=torch.float32)
+                    param_idx += 1
+                if node.t_name == "func":
+                    for child in node.data:
+                        update_constants(child)
+            
+            update_constants(self.start_node)
+            
+            # Evaluate error with current constants
+            X = data[:, :-1]
+            y_true = data[:, -1]
+            y_pred = self.forward(X).detach().numpy()
+            return np.mean((y_pred - y_true) ** 2)
+        
+        # Run Nelder-Mead optimization
+        from scipy.optimize import minimize
+        result = minimize(objective,
+                          initial_params, 
+                          method='Powell',
+                          options={'maxiter': max_iter, 'disp': False}
+                          )
+        
+        # Update tree with optimized constants
+        final_params = result.x
+        # print("final_params:", final_params)
+        param_idx = 0
+        def update_final_constants(node):
+            nonlocal param_idx
+            if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
+                node.scale = torch.tensor([final_params[param_idx]], dtype=torch.float32)
+                param_idx += 1
+                node.bias = torch.tensor([final_params[param_idx]], dtype=torch.float32)
+                param_idx += 1
+            if node.t_name == "func":
+                for child in node.data:
+                    update_final_constants(child)
+        
+        update_final_constants(self.start_node)
+
+    # evaluate tree error 
     def eval_tree_error(self, data: Union[np.ndarray, torch.Tensor], inv_error: bool = False):
-        """Evaluate tree error with PyTorch tensors"""
+        """Evaluate tree error without constant optimization"""
         if isinstance(data, np.ndarray):
-            data = to_tensor(data, requires_grad=self.requires_grad)
+            data = torch.from_numpy(data).float()
         
+        # Original error evaluation logic
         X = data[:, :-1]
-        y = data[:, -1]
+        y_true = data[:, -1].reshape(-1, 1)
         
-        # Reset cached outputs and domain penalties
-        reset_cache(self.start_node)
-        self.start_node.reset_domain_penalties()
         
-        # Forward pass
-        y_aprox = self.forward(varval=X, cache=True)
+        try:
+            # print("X.shape:", X.shape)
+            # print("y_true.shape:", y_true.shape)
+            y_pred = self.forward(X)
+            # print("y_pred.shape:", y_pred.shape)
+            # print("y_pred.reshape(-1, 1).shape:", y_pred.reshape(-1, 1).shape)
+
+            # quit()
+            if inv_error:
+                forward_loss = torch.mean((y_pred - y_true) ** 2).item()
+                error = self.eval_inv_error(data) + forward_loss
+            else:
+                error = torch.mean((y_pred - y_true) ** 2).item()
+                # error = calculate_mse(y_pred, y_true).item()
+                
+                # # Add domain penalty if applicable
+                # domain_penalty = self.start_node.get_total_domain_penalty()
+                # if domain_penalty > 0:
+                #     error += domain_penalty
+                # self.domain_loss = domain_penalty
+
+            if np.isnan(error) or np.isinf(error):
+                error = float('inf')
+            
+            self.error = error
+            self.forward_loss = error
+            return error
         
-        # Calculate MSE
-        loss = calculate_mse(y_aprox, y)
-        global min_loss
-        if loss.item() < min_loss:
-            min_loss = loss.item()
-            print("min_loss:", min_loss)
-        
-        # Get total domain penalty
-        domain_penalty = self.start_node.get_total_domain_penalty()
-        
-        # Normalize domain penalty by the number of samples
-        domain_penalty = domain_penalty / len(y) if len(y) > 0 else domain_penalty
+        except Exception as e:
+            print(f"Error in eval_tree_error: {e}")
+            return float('inf')
 
-        if inv_error:
-            inv_loss = self.eval_inv_error(data[np.random.choice(len(data), 100, replace=False)])
-        else:
-            inv_loss = 0
-
-        self.forward_loss = loss.item()
-        self.inv_loss = inv_loss
-        self.domain_loss = domain_penalty
-        self.error = loss.item() + 10*self.max_num_of_node + inv_loss + domain_penalty
-
-
-        # if self.requires_grad:
-        #     inv_loss = self.eval_inv_error(data)
-        #     # print("loss:", loss.item())
-        #     # print("inv_loss:", inv_loss)
-        #     # print("domain_penalty:", domain_penalty)
-        #     # print("max_num_of_node:", self.max_num_of_node)
-        #     self.error = loss.item() + 10*self.max_num_of_node + inv_loss + domain_penalty
-        # else:
-        #     # print("loss:", loss.item())
-        #     # print("domain_penalty:", domain_penalty)
-        #     # print("max_num_of_node:", self.max_num_of_node)
-        #     self.error = loss.item() + 10*self.max_num_of_node + domain_penalty
-
+    # wrapper function for optimization that computes squared difference between tree output and target
     def wrapped_tree_func(self, x: np.ndarray, target_y: float) -> float:
         """Wrapper function for optimization that computes squared difference between tree output and target."""
         # Convert input to float64 for optimization
@@ -332,6 +484,7 @@ class Tree:
         y_pred = self.forward(varval=x_tensor).detach().numpy().astype(np.float64)
         return float((y_pred - target_y) ** 2)  # Ensure output is float64
 
+    # evaluate inverse error using scipy.optimize.minimize (for inverse pass/error)
     def eval_inv_error(self, data: Union[np.ndarray, torch.Tensor]) -> float:
         """
         Evaluate inverse error using scipy.optimize.minimize.
@@ -434,6 +587,7 @@ class Tree:
     #         return {}
     #     return self.start_node.get_gradients()
 
+    # print tree in a visual representation (as a bash tree command in terminal)
     def print_tree(self):
         """Print a visual representation of the tree using ASCII characters"""
         def _build_str(node, level=0, prefix="Root: ", is_last=True):
@@ -457,6 +611,7 @@ class Tree:
         print(self)
         return _build_str(self.start_node)
 
+    # convert tree to mathematical expression string
     def to_math_expr(self):
         """Convert the tree to a mathematical expression string"""
         def _build_expr(node):
@@ -465,13 +620,14 @@ class Tree:
                     return f"x{node}"
                 return str(node)
             
+            # Build base expression
             if node.parity == 1:
                 inner = _build_expr(node.data[0])
                 # Handle all unary functions
                 func_name = node.func.__name__
                 if func_name.endswith('_'):  # Remove trailing underscore
                     func_name = func_name[:-1]
-                return f"{func_name}({inner})"
+                expr = f"{func_name}({inner})"
             else:
                 left = _build_expr(node.data[0])
                 right = _build_expr(node.data[1])
@@ -479,22 +635,35 @@ class Tree:
                 # Handle binary operations with special formatting
                 func_name = node.func.__name__
                 if func_name == 'sum_':
-                    return f"({left} + {right})"
+                    expr = f"({left} + {right})"
                 elif func_name == 'mult_':
-                    return f"({left} * {right})"
+                    expr = f"({left} * {right})"
                 elif func_name == 'div_':
-                    return f"({left} / {right})"
+                    expr = f"({left} / {right})"
                 elif func_name == 'pow_':
-                    return f"({left} ^ {right})"
+                    expr = f"({left} ^ {right})"
                 else:
                     # Remove trailing underscore for other binary functions
                     if func_name.endswith('_'):
                         func_name = func_name[:-1]
-                    return f"{func_name}({left}, {right})"
+                    expr = f"{func_name}({left}, {right})"
+                
+            # Add constants if required and they exist
+            if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
+                scale = node.scale.item()
+                bias = node.bias.item()
+
+                if scale != 1 or bias != 0:
+                    if scale != 1:
+                        expr = f"{scale}*({expr})"
+                    if bias != 0:
+                        expr = f"({expr} + {bias})"
+
+            return expr
                 
         return _build_expr(self.start_node)
 
-
+# reset cached tensors in a node and its children
 def reset_cache(node):
     """Reset cached tensors in a node and its children"""
     if node._cached_output is not None:
@@ -508,6 +677,7 @@ def reset_cache(node):
             if isinstance(child, Node):
                 reset_cache(child)
 
+# safely deepcopy an object containing PyTorch tensors
 def safe_deepcopy(obj):
     """Safely deepcopy an object containing PyTorch tensors"""
     if isinstance(obj, Node):
@@ -537,6 +707,7 @@ def safe_deepcopy(obj):
     else:
         return copy.deepcopy(obj)
 
+# crossover two trees (combine parent1 with a node from parent2 with multivariable support)
 def crossover(p1: Tree, p2: Tree) -> Tree:
     """Combine parent1 with a node from parent2 with multivariable support"""
     child = safe_deepcopy(p1)
@@ -566,16 +737,17 @@ def crossover(p1: Tree, p2: Tree) -> Tree:
     # If no valid crossover found, return copy of parent1
     return child
 
-# parity1 = [const_, ident_, exp_, sin_, cos_]
-# parity2 = [sum_, mult_, div_, pow_]
-
+# mutate a tree (change random node according to its parity with multivariable support)
 def mutation(tree: Tree):
     """Change random node according to its parity with multivariable support"""
-    if tree.start_node.t_name not in ("var", "ident"):
+    
+    mutant = safe_deepcopy(tree)
+    
+    if mutant.start_node.t_name not in ("var", "ident"):
         # Get mutable nodes (exclude var and ident nodes)
         mutable_indices = []
-        for i in range(tree.max_num_of_node):
-            node = tree.get_node_by_num(i)
+        for i in range(mutant.max_num_of_node):
+            node = mutant.get_node_by_num(i)
             if node and node.t_name not in ("var", "ident"):
                 mutable_indices.append(i)
         
@@ -583,7 +755,7 @@ def mutation(tree: Tree):
             return
             
         idx = np.random.choice(mutable_indices)
-        new_node = tree.get_node_by_num(idx)
+        new_node = mutant.get_node_by_num(idx)
         
         # Get appropriate functions based on parity
         if new_node.parity == 1:
@@ -596,6 +768,32 @@ def mutation(tree: Tree):
             if funcs:
                 new_node.func = np.random.choice(funcs)
 
+    return mutant
+
+def mutation_constant(tree: Tree):
+    """Change random constant in the tree"""
+    
+    mutant = safe_deepcopy(tree)
+    
+    mutable_indices = []
+
+    if mutant.start_node.t_name not in ("var", "ident"):
+        # Get mutable nodes (exclude var and ident nodes)
+        for i in range(mutant.max_num_of_node):
+            node = mutant.get_node_by_num(i)
+            if node and node.t_name == "ident":
+                mutable_indices.append(i)
+    
+    if not mutable_indices:
+        return tree
+    
+    idx = np.random.choice(mutable_indices)
+    node = mutant.get_node_by_num(idx)
+    node.data = node.data + np.random.normal(0, 1)
+
+    return mutant
+
+# calculate Mean Squared Error using PyTorch operations
 def calculate_mse(output: torch.Tensor, example: torch.Tensor) -> torch.Tensor:
     """Calculate Mean Squared Error using PyTorch operations
     Args:
@@ -620,12 +818,14 @@ def calculate_mse(output: torch.Tensor, example: torch.Tensor) -> torch.Tensor:
         return NAN_PUNISHMENT * torch.isnan(output).sum()
     return error
 
+# calculate mean error of a list of models
 def get_mean_error(models):
     suma = 0
     for model in models:
         suma += model.error
     return suma/len(models)
 
+# perform non-dominated sorting of models based on their objectives
 def non_dominated_sort(models):
     """
     Perform non-dominated sorting of models based on their objectives.
@@ -680,6 +880,7 @@ def non_dominated_sort(models):
     
     return fronts
 
+# calculate crowding distance for models in a front
 def calculate_crowding_distance(front):
     """
     Calculate crowding distance for models in a front.
@@ -698,7 +899,8 @@ def calculate_crowding_distance(front):
         model.crowding_distance = 0
     
     # Calculate crowding distance for each objective
-    objectives = ['forward_loss', 'inv_loss', 'max_num_of_node', 'domain_loss']
+    # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node', 'domain_loss']
+    objectives = ['forward_loss', 'inv_loss', 'max_num_of_node']
     
 
     for objective in objectives:
@@ -718,6 +920,7 @@ def calculate_crowding_distance(front):
             distance = (getattr(front[i + 1], objective) - getattr(front[i - 1], objective)) / obj_range
             front[i].crowding_distance += distance
 
+# select models based on specified method (top_k or NSGA-II) and parameters
 def model_selection(models, params=None):
     """
     Select models based on specified method and parameters.
@@ -792,81 +995,256 @@ def model_selection(models, params=None):
     
     return new_models
 
-def evolution(num_of_epochs, models, training_data):
-    """evolution process with crossover and mutation"""
-    mean_error_arr = np.zeros(num_of_epochs)
-    best_model = safe_deepcopy(models[0])  # Initialize with first model
-    best_error = float('inf')
+# optimize constants for a population of trees
+def optimize_population_constants(models: List[Tree], training_data: Union[np.ndarray, torch.Tensor], max_iter: int = 50) -> None:
+    """Optimize constants for a population of trees"""
+    if not REQUIRES_CONST:
+        return
     
+    print("Optimizing constants for population...")
+    for model in models:
+        model.optimize_constants(training_data, max_iter=max_iter)
+
+# set evaluated error for models
+def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndarray, torch.Tensor], epoch: int):
+    """Set evaluated error for models"""
+    for model in models_to_eval:
+        if epoch % INV_ERROR_EVAL_FREQ == 0 and model.requires_grad:
+            model.eval_tree_error(training_data, inv_error=True)
+        else:
+            model.eval_tree_error(training_data)
+
+# evolution process with crossover, mutation, and constant optimization(if REQUIRES_CONST is True)
+def evolution(num_of_epochs, models, training_data):
+    """evolution process with crossover, mutation, and constant optimization"""
+    
+    for model in models:
+        print(model.to_math_expr(), end="\n")
+
+    # initialize arrays for tracking progress
+    mean_error_arr = np.zeros(num_of_epochs)
+    
+    # initialize best model and best error
+    best_model = safe_deepcopy(models[0])
+    min_loss = float('inf')
+    best_error = float('inf')
+
+    # Model selection (choose method of selection based on params)
+    selection_params = {
+        "population_size": POPULATION_SIZE,
+        "method":          SELECTION_METHOD
+    }
+
+    # select POPULATION_SIZE models for init population for evolution 
+    print("Selecting models for init population...")
+    models = model_selection(models, selection_params)
+    # selection_params["population_size"] = NUM_OF_MODELS_TO_SELECT # uncomment if we want to select NUM_OF_MODELS_TO_SELECT models for init population
+    
+    # evolution loop
     for epoch in range(num_of_epochs):
+
+        # Initialize set to track unique expressions
+        unique_expressions = {model.to_math_expr() for model in models}
+
         print("EPOCH:", epoch)
-        # Create new models list without copying tensors
+        
+        # for model in models:
+        #     print(model.to_math_expr(), end="\n")
+        
+        # print("len(models):", len(models))
+        # print("POPULATION_SIZE//len(models) - 1:", POPULATION_SIZE//len(models) - 1)
+        # if epoch == 2:
+        #     quit()
+
+        # Create part of a new population (copy of the current population)
         models_to_eval = []
         for model in models:
             new_model = safe_deepcopy(model)
             models_to_eval.append(new_model)
 
-        for model in models:
-            for i in range(POPULATION_SIZE//len(models) - 1):
-                new_model = crossover(model, models[np.random.randint(0, len(models))])
-                while new_model.max_num_of_node > new_model.max_depth:
+        if epoch != 0: # for the first epoch we don't need to do anything
+            
+
+            # # =======hard selection, crossover, mutation, evaluation, selection=======
+            # # Crossover (combine parent1 with a node from parent2 with multivariable support)
+            # for model in models:
+            #     # example: if we have 10 selected models, POPULATION_SIZE = 100,
+            #     # we need to create 90 new models
+            #     # 9*10 = len(models)*(POPULATION_SIZE//len(models) - 1)
+                
+            #     for _ in range(POPULATION_SIZE//len(models) - 1):
+            #         new_model = crossover(model, models[np.random.randint(0, len(models))])
+            #         while new_model.max_num_of_node > new_model.max_depth:
+            #             new_model = crossover(model, models[np.random.randint(0, len(models))])
+            #         models_to_eval.append(new_model)
+
+            # # Mutation (change random node according to its parity with multivariable support)
+            # for model in models_to_eval:
+            #     if np.random.uniform() < model.mutation_prob:
+            #         mutant = mutation(model)
+            #         models_to_eval.append(mutant)
+            # # ========================================================
+
+
+            # =======crossover, then select the best models, then mutate=======
+            # crossover
+            for model in models:
+                # Try up to 10 times to get a unique expression through crossover
+                for _ in range(10):
                     new_model = crossover(model, models[np.random.randint(0, len(models))])
-                models_to_eval.append(new_model)
+                    while new_model.max_num_of_node > new_model.max_depth:
+                        new_model = crossover(model, models[np.random.randint(0, len(models))])
+                    
+                    expr = new_model.to_math_expr()
+                    if expr not in unique_expressions:
+                        unique_expressions.add(expr)
+                        models_to_eval.append(new_model)
+                        break
+            print(f"Number of unique expressions after crossover: {len(unique_expressions)}")
 
-        for model in models_to_eval:
-            if np.random.uniform() < model.mutation_prob:
-                mutation(model)
-            if epoch%5 == 0 and model.requires_grad:
-                model.eval_tree_error(training_data, inv_error=True)
-            else:
-                model.eval_tree_error(training_data)
 
-        # Model selection
-        params = {
-            "population_size": POPULATION_SIZE,
-            # "method": "NSGA-II"
-            "method": "top_k"
-        }
-        selected_models = model_selection(models_to_eval, params)
+            # Evaluate models (choose variant of evaluation based on requires_grad)
+            set_evaluated_error(models_to_eval, training_data, epoch)
 
+            # select the best models
+            models_to_eval = model_selection(models_to_eval, selection_params)
+            unique_expressions = {model.to_math_expr() for model in models_to_eval}
+            # print("len(models_to_eval) after selection:", len(models_to_eval))
+
+            # mutate from best models
+            new_models = []
+            for model in models_to_eval:
+                # Try up to 10 times to get a unique expression through mutation
+                for _ in range(10):
+                    mutated_model = mutation(model)
+                    if not REQUIRES_CONST and np.random.uniform() < CONST_MUTATION_PROB:
+                        mutated_model = mutation_constant(mutated_model)
+                    expr = mutated_model.to_math_expr()
+                    if expr not in unique_expressions:
+                        unique_expressions.add(expr)
+                        new_models.append(mutated_model)
+                        break
+            models_to_eval.extend(new_models)
+            print(f"Number of unique expressions after mutation: {len(unique_expressions)}")
+            # print("len(models_to_eval) after mutation:", len(models_to_eval))
+            # quit()
+            # ========================================================
+
+
+            # # =======crossover, mutation, evaluation, selection=======
+            # # crossover
+            # for model in models:
+            #     new_model = crossover(model, models[np.random.randint(0, len(models))])
+            #     while new_model.max_num_of_node > new_model.max_depth:
+            #         new_model = crossover(model, models[np.random.randint(0, len(models))])
+            #     models_to_eval.append(new_model)
+            # # print("len(models_to_eval) after crossover:", len(models_to_eval))
+
+            # # mutate
+            # for model in models:
+            #     models_to_eval.append(mutation(model))
+            # # print("len(models_to_eval) after mutation:", len(models_to_eval))
+            # # quit()
+            # # ========================================================
+
+
+            # # =======crossover, then mutate from all models, evaluate, select the best models=======
+            # # crossover
+            # for model in models:
+            #     new_model = crossover(model, models[np.random.randint(0, len(models))])
+            #     while new_model.max_num_of_node > new_model.max_depth:
+            #         new_model = crossover(model, models[np.random.randint(0, len(models))])
+            #     models_to_eval.append(new_model)
+            # # print("len(models_to_eval) after crossover:", len(models_to_eval))
+                
+            # # mutate from all models
+            # new_models = [] 
+            # for model in models_to_eval:
+            #     new_models.append(mutation(model))
+            # models_to_eval = models_to_eval + new_models
+            # # print("len(models_to_eval) after mutation:", len(models_to_eval))
+            # # quit()
+            # # ========================================================
+
+
+        # Optimize constants periodically if enabled
+        if REQUIRES_CONST and epoch % CONST_OPT_FREQUENCY == 0:
+            optimize_population_constants(models_to_eval, training_data, max_iter=50)
+
+        # Evaluate models (choose variant of evaluation based on requires_grad)
+        set_evaluated_error(models_to_eval, training_data, epoch)
+
+        # Best models selection (choose method of selection based on params)
+        selected_models = model_selection(models_to_eval, selection_params)
         
-        # Ensure we always have models
+        
+        # Ensure we have models
         if not selected_models:
-            print(f"No selected models, using {params['method']}")
+            print(f"No selected models, using {selection_params['method']}")
             models_to_eval.sort(key=lambda x: x.error)
-            models = [safe_deepcopy(model) for model in models_to_eval[:10]]
+            models = [safe_deepcopy(model) for model in models_to_eval[:NUM_OF_MODELS_TO_SELECT]]
         else:
             models = selected_models
 
+        # Track progress (mean error of the population)
         mean_error = get_mean_error(models)
         mean_error_arr[epoch] = mean_error
-        
+
         # Track best model
         if models[0].error < best_error:
             best_error = models[0].error
             best_model = safe_deepcopy(models[0])
-        
-        if (epoch + 1) % 10 == 0:
-            print(f"EPOCH: {epoch+1}/{num_of_epochs}")
-            print(f"Current best error: {best_error:.6f}")
+            print("best_model:", best_model.to_math_expr(), "best_error:", best_error)
+            print("forward_loss:", best_model.forward_loss, "inv_loss:", best_model.inv_loss, "max_num_of_node:", best_model.max_num_of_node)
 
-    # Store error history and best error in the best model
+        # global min_loss
+        print("min_loss:", min_loss)
+        if models[0].forward_loss < min_loss:
+            min_loss = models[0].forward_loss
+            if min_loss < 0.0001:
+                print("min_loss < 0.0001")
+                print(f"Current best error: {best_error:.6f}")
+                print(f"Number of unique expressions: {len(unique_expressions)}")
+                for model in selected_models[:5]:
+                    print(model.to_math_expr(), end="\n")
+                quit()
+
+        # Print best model and its expression every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            print(f"Current best error: {best_error:.6f}")
+            print(f"Number of unique expressions: {len(unique_expressions)}")
+            for model in selected_models[:5]:
+                print(model.to_math_expr(), end="\n")
+
+    # Store results
     best_model.error_history = mean_error_arr
-    # mse loss
     best_model.min_loss = min_loss
-    # mse + inv + domain + depth loss
     best_model.best_error = best_error
     
-    # Optional: Plot error history
+    # Plot error history
     plt.figure(figsize=(10, 6))
     plt.plot(mean_error_arr)
     plt.title('Training Error History')
     plt.xlabel('Epoch')
     plt.ylabel('Error')
     plt.grid(True)
-    plt.yscale('log')  # Use log scale for better visualization
-    plt.show()
+    plt.yscale('log')
+    plt.show()    
     
+    # print final results
     print(f"Final min_loss: {min_loss}")
     print(f"Best error achieved: {best_error:.6f}")
-    return best_model
+    print(f"Total number of unique expressions found: {len(unique_expressions)}")
+
+    # return best model
+    print("selected_models:", [model.to_math_expr() for model in selected_models])
+    print("\n")
+    print("sorted_selected_models:", [model.to_math_expr() for model in sorted(selected_models, key=lambda x: x.error)])
+    for i, model in enumerate(sorted(selected_models, key=lambda x: x.error)):
+        print(f"{i}: {model.to_math_expr()}")
+        print(f"   error: {model.error:.6f}")
+        print(f"   forward_loss: {model.forward_loss:.6f}")
+        print(f"   inv_loss: {getattr(model, 'inv_loss', 0):.6f}")
+        print(f"   domain_loss: {model.domain_loss:.6f}")
+        print(f"   complexity: {model.max_num_of_node}")
+    return sorted(selected_models, key=lambda x: x.error)[0]

@@ -76,17 +76,25 @@ def cos_(x):
     """Vectorized cosine"""
     return torch.cos(x)
 
-def pow_(x, power):
+# def pow_(x, power):
+#     """Vectorized power with handling of negative powers"""
+#     # Handle negative/zero base for fractional powers
+#     power = 2
+#     safe_x = torch.where(x < 0, torch.zeros_like(x), x)
+    
+#     # For negative powers, compute positive power first then reciprocal
+#     # abs_power = torch.abs(power)
+#     # result = torch.pow(safe_x + EPSILON, abs_power)
+#     # result = torch.where(power < 0, 1.0 / (result + EPSILON), result)
+    
+#     return torch.clamp(safe_x**power, -MAX_VALUE, MAX_VALUE)
+def pow2_(x):
     """Vectorized power with handling of negative powers"""
-    # Handle negative/zero base for fractional powers
-    safe_x = torch.where(x < 0, torch.zeros_like(x), x)
-    
-    # For negative powers, compute positive power first then reciprocal
-    abs_power = torch.abs(power)
-    result = torch.pow(safe_x + EPSILON, abs_power)
-    result = torch.where(power < 0, 1.0 / (result + EPSILON), result)
-    
-    return torch.clamp(result, -MAX_VALUE, MAX_VALUE)
+    return torch.clamp(x**2, -MAX_VALUE, MAX_VALUE)
+
+def pow3_(x):
+    """Vectorized power with handling of negative powers"""
+    return torch.clamp(x**3, -MAX_VALUE, MAX_VALUE)
 
 def log_(x):
     """Vectorized natural logarithm with handling of negative/zero inputs"""
@@ -186,12 +194,20 @@ FUNCTIONS = {
         range_max=1,
         description="Cosine function"
     ),
-    'pow_': FunctionInfo(
-        name='pow_',
-        func=pow_,
-        parity=2,
+    'pow2_': FunctionInfo(
+        name='pow2_',
+        func=pow2_,
+        parity=1,
         category=FunctionCategory.EXPONENTIAL,
-        display_name='^',
+        display_name='^2',
+        description="Power function"
+    ),
+    'pow3_': FunctionInfo(
+        name='pow3_',
+        func=pow3_,
+        parity=1,
+        category=FunctionCategory.EXPONENTIAL,
+        display_name='^3',
         description="Power function"
     ),
     'log_': FunctionInfo(
