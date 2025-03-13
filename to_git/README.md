@@ -4,19 +4,117 @@ A Python implementation of symbolic regression that combines genetic programming
 
 ## Program Structure
 
+### PSEUDO CODE
+
+SYMBOLIC REGRESSION ALGORITHM
+
+1. INITIALIZATION
+   1.1. Load configuration parameters from parameters.py
+   1.2. Create diverse initial population:
+       - Ensure each function appears at least once as root
+       - Create one tree with a constant node if REQUIRES_CONST is False
+       - Fill remaining population with unique random trees
+   1.3. Initialize set of unique expressions
+
+2. EVOLUTION LOOP (for num_epochs iterations)
+   2.1. Track unique expressions in current population
+   2.2. For each model in population:
+       - Create copy for evaluation
+   
+   2.3. If not first epoch:
+       a) CROSSOVER PHASE
+          - For each model:
+              * Try up to 10 times to create unique offspring
+              * Perform crossover with random other model
+              * Add to evaluation list if expression is unique
+       
+       b) EVALUATION PHASE
+          - Evaluate all models:
+              * Calculate forward loss (MSE)
+              * Add domain penalty if applicable
+              * Calculate inverse error if REQUIRES_GRAD is true
+       
+       c) SELECTION PHASE
+          - If SELECTION_METHOD is "NSGA-II":
+              * Perform non-dominated sorting into fronts
+              * Calculate crowding distance within fronts
+              * Select models based on front rank and distance
+          - If SELECTION_METHOD is "top_k":
+              * Sort by total error
+              * Select top k models
+       
+       d) MUTATION PHASE
+          - For each selected model:
+              * Try up to 10 times to create unique mutant
+              * Apply mutation with probability MUTATION_PROB
+              * Apply constant mutation if REQUIRES_CONST is False
+              * Add to population if expression is unique
+
+   2.4. If REQUIRES_CONST and epoch % CONST_OPT_FREQUENCY == 0:
+        - Optimize constants in population
+   
+   2.5. Evaluate all models in current population
+   
+   2.6. Track and update best model:
+        - Update if current model has lower error
+        - Store error history
+        - Check for early stopping if min_loss < 0.0001
+
+3. MODEL EVALUATION
+   3.1. Calculate error components:
+       - Forward loss (MSE between predictions and targets)
+       - Domain penalty (for function domain violations)
+       - Inverse error (if REQUIRES_GRAD is true)
+   
+   3.2. Total error calculation:
+       error = forward_loss + domain_penalty + inv_loss
+
+4. TREE OPERATIONS
+
+   4.1. Build Random Tree:
+       - Input: num_vars, max_depth, functions, requires_grad, allow_constants
+       - Recursively build tree up to max_depth
+       - Return variable node or constant node at leaves
+       - Ensure unique expressions in population
+
+   4.2. Mutation:
+       - Randomly select node
+       - Replace with compatible function (same parity)
+       - Maintain tree structure
+       - Try multiple times for unique expression
+
+   4.3. Crossover:
+       - Select random nodes from two parents
+       - Exchange subtrees
+       - Validate resulting tree
+       - Ensure unique expression
+
+   4.4. Constant Optimization:
+       - Periodically optimize constant values
+       - Only if REQUIRES_CONST is true
+       - Use gradient-based optimization
+
+5. OUTPUT
+   5.1. Return best model found during evolution
+   5.2. Plot error history
+   5.3. Display final statistics:
+       - Best error achieved
+       - Number of unique expressions found
+       - Final mathematical expression
+
 The implementation consists of several Python modules:
 
 ### Main Module (`sr_test.py`)
 The main module orchestrates the symbolic regression process. Key features include:
 - Data loading and preprocessing
-- Initial population generation
-- Evolution process control
+- Initial population generation with unique expression tracking
+- Evolution process control with NSGA-II selection
 - Model evaluation and visualization
 
 Main functions:
-- `create_diverse_population()`: Generates initial population with guaranteed function coverage
-- `build_random_tree()`: Creates random expression trees
-- `run_evolution()`: Executes the evolutionary algorithm
+- `create_diverse_population()`: Generates initial population with guaranteed function coverage and unique expressions
+- `build_random_tree()`: Creates random expression trees with optional constant nodes
+- `run_evolution()`: Executes the evolutionary algorithm with unique expression tracking
 
 ### Tree Implementation (`sr_tree.py`)
 Implements the core tree structure for representing mathematical expressions:
@@ -25,6 +123,7 @@ Implements the core tree structure for representing mathematical expressions:
 - Evolution operators (mutation, crossover)
 - Forward and inverse evaluation methods
 - Domain penalty calculation
+- NSGA-II based model selection
 
 ### Function Definitions (`nodes.py`)
 Contains definitions of available mathematical functions:
@@ -33,7 +132,7 @@ Contains definitions of available mathematical functions:
 - Exponential and logarithmic functions
 - Function categorization and properties
 - Domain and range constraints
-- constant node (defined as an identity of a some predefined constant, cant be changed)
+- Constant nodes with optimization support (if REQUIRES_CONST is True, else they can be mutated by adding random normal noise to the constant value)
 
 ### Visualization (`visual.py`)
 Provides visualization capabilities:
@@ -87,60 +186,15 @@ For CSV files, the format should be:
 - Target variable in the last column
 
 ### Configuration Parameters
-Key parameters that can be adjusted:
-- `population_size`: Size of the population (default: 70)
-- `num_epochs`: Number of evolution generations (default: 100)
-- `mutation_prob`: Probability of mutation (default: 0.15)
-- `max_depth`: Maximum depth of expression trees (default: 10)
-- `requires_grad`: Whether to compute gradients (default: False)
-
-## Advanced Features
-
-### Custom Functions
-New functions can be added by modifying `nodes.py`:
-```python
-FUNCTIONS['new_func_'] = FunctionInfo(
-    name='new_func_',
-    func=new_func_implementation,
-    parity=1,  # 1 for unary, 2 for binary
-    category=FunctionCategory.ARITHMETIC,
-    display_name='new_func',
-    domain_min=-np.inf,
-    domain_max=np.inf
-)
-```
-
-### Domain Constraints
-The program supports domain constraints for functions:
-- Automatic domain penalty calculation
-- Range validation for mathematical operations
-- Adaptive penalty weighting in the fitness function
-Domain constraints are defined in the `FUNCTIONS` dictionary in `nodes.py`. 
-
-### Visualization Options
-Different visualization modes available:
-- Single variable plots (2D)
-- Two variable surface plots (3D)
-- Error evolution plots
-- Custom plot configurations
-
-## Example Applications
-
-### Single Variable Regression
-```python
-# Finding a polynomial function
-X = np.linspace(-5, 5, 100)
-Y = X**3 - 2*X + 1
-model = run_evolution(X, Y)
-```
-
-### Multiple Variable Regression
-```python
-# Finding a 2D function
-X = np.random.uniform(-5, 5, (100, 2))
-Y = X[:, 0]**2 + X[:, 1]**2
-model = run_evolution(X, Y)
-```
+Key parameters that can be adjusted in `parameters.py`:
+- `POPULATION_SIZE`: Size of the population (default: 100)
+- `NUM_OF_EPOCHS`: Number of evolution generations (default: 100)
+- `MUTATION_PROB`: Probability of mutation (default: 0.25)
+- `MAX_DEPTH`: Maximum depth of expression trees (default: 5)
+- `REQUIRES_GRAD`: Whether to compute gradients (default: False)
+- `REQUIRES_CONST`: Whether to use constant optimization (default: False)
+- `SELECTION_METHOD`: Model selection method ("NSGA-II" or "top_k")
+- `FIXED_SEED`: Random seed for reproducibility (default: 3)
 
 ## Implementation Details
 
@@ -148,12 +202,12 @@ model = run_evolution(X, Y)
 
 #### Mutation
 The mutation operator randomly modifies nodes in the expression tree while preserving the tree structure:
-- Each node has a mutation probability of 0.15 (configurable)
+- Each node has a mutation probability of 0.25 (configurable)
 - For function nodes:
   - Unary functions can be replaced with other unary functions
   - Binary functions can be replaced with other binary functions
   - Function type (unary/binary) is preserved to maintain tree structure
-- Variable and constant nodes are not mutated
+- Constant nodes can be mutated with probability CONST_MUTATION_PROB
 - Domain constraints are checked after mutation
 
 #### Crossover
@@ -166,11 +220,10 @@ The crossover operator combines two parent trees to create offspring:
    - Checks maximum depth constraint
    - Verifies variable indices
    - Ensures domain constraints
-6. If validation fails, tries different nodes (up to 10 attempts)
+6. Tries up to 10 times to create a unique expression
 7. Returns original parent1 copy if no valid crossover is found
 
-### Inverse Function Approximation
-
+### Inverse Function Approximation (if REQUIRES_GRAD is True, currently not used in experiments)
 The program uses optimization-based inverse function approximation:
 ```python
 def eval_inv_error(self, data):
@@ -195,17 +248,32 @@ def eval_inv_error(self, data):
 ```
 
 Key features:
-- Uses BFGS optimization method
+- Uses BFGS optimization method (can be changed to other optimization methods)
 - Normalizes input data
 - Limited to 10 iterations for efficiency
 - Handles optimization failures gracefully
 - Returns squared error between found and original inputs
 
-### Model Selection Criteria
+### Model Selection
 
-The final model is selected based on a composite fitness function:
+The implementation supports two selection methods:
+
+#### NSGA-II Selection
+Multi-objective optimization considering:
+- Forward loss (MSE)
+- Inverse error (if enabled)
+- Domain penalty
+- Model complexity
+
+Process:
+1. Non-dominated sorting into Pareto fronts
+2. Crowding distance calculation within fronts
+3. Selection based on front rank and crowding distance
+
+#### Top-k Selection
+Simple selection based on total error score:
 ```python
-fitness = mse_loss + 10*tree_size + inverse_error + domain_penalty
+error = mse_loss + complexity_penalty + inv_loss + domain_penalty
 ```
 
 Where:
@@ -214,182 +282,28 @@ Where:
 - `inverse_error`: Error from inverse function approximation
 - `domain_penalty`: Penalty for violating function domain constraints
 
-Selection process:
-1. Population is sorted by fitness (lower is better)
-2. Top 10 models are preserved for next generation
-3. These models are used to generate new population through crossover
-4. Process continues for specified number of epochs
-5. Best model from final population is returned 
-
-## Performance Tips
-- Use smaller population sizes for initial testing
-- Increase population size and epochs for better results
-- Enable gradients only when necessary
-- Normalize input data for better convergence
-- Use appropriate max_depth for your problem complexity
-
-## Technical Details
-
-### Tree Evaluation Process
-
-#### Value Propagation
-The computation tree processes input values in a bottom-up manner:
-1. Input values are converted to PyTorch tensors
-2. Variable nodes receive their corresponding values from the input tensor
-3. Constant nodes maintain their predefined values
-4. Function nodes evaluate their children first, then apply their operation
-5. Results are cached at each node for efficiency
-6. The root node's output represents the final computation
-
-Example of value propagation:
-```python
-def eval_node(self, varval=None, cache=True):
-    """Evaluate node with PyTorch tensors and optional gradient computation"""
-    if varval is not None:
-        # Convert input to tensor if needed
-        if isinstance(varval, np.ndarray):
-            varval = to_tensor(varval, requires_grad=self.requires_grad)
-        if varval.dim() == 1:
-            varval = varval.reshape(-1, 1)
-        self.num_vars = varval.shape[1]
-    
-    # Handle different node types
-    if self.t_name == "ident":
-        # Constant node
-        result = to_tensor(self.data[0], requires_grad=False)
-        result = result.expand(varval.shape[0])
-    elif self.t_name == "var":
-        # Variable node
-        var_idx = self.data[0]
-        result = varval[:, var_idx].clone()
-        if self.requires_grad:
-            result.requires_grad_(True)
-    else:
-        # Function node
-        if self.parity == 1:
-            child_result = self.data[0].eval_node(varval=varval, cache=cache)
-            result = self.func(child_result)
-        else:
-            in1 = self.data[0].eval_node(varval=varval, cache=cache)
-            in2 = self.data[1].eval_node(varval=varval, cache=cache)
-            result = self.func(in1, in2)
-```
-
-#### Domain Constraints Handling
-Domain constraints are enforced at each node during evaluation:
-
-1. Each function has defined domain constraints:
-```python
-FUNCTIONS['log_'] = FunctionInfo(
-    name='log_',
-    func=log_,
-    parity=1,
-    category=FunctionCategory.LOGARITHMIC,
-    domain_min=0,  # log(x) defined only for x > 0
-    range_min=-MAX_VALUE,
-    range_max=MAX_VALUE
-)
-```
-
-2. Domain violations are tracked during evaluation:
-```python
-# Check domain constraints for unary functions
-if isinstance(child_result, torch.Tensor) and self.func_info is not None:
-    mask_min = child_result < self.func_info.domain_min
-    mask_max = child_result > self.func_info.domain_max
-    if mask_min.any() or mask_max.any():
-        self.domain_penalty += torch.sum(torch.abs(
-            torch.where(mask_min, 
-                       self.func_info.domain_min - child_result, 
-                       0)
-        )) + torch.sum(torch.abs(
-            torch.where(mask_max, 
-                       child_result - self.func_info.domain_max, 
-                       0)
-        ))
-```
-
-3. Domain penalties are accumulated:
-- Each violation adds to the node's domain_penalty
-- Penalties are propagated up the tree
-- Total penalty affects the model's fitness score
-
-4. Handling invalid inputs:
-- Small epsilon values are added to prevent division by zero
-- Values are clamped to valid ranges
-- NaN results are penalized heavily in the fitness function
-
-### Gradient Computation (requires_grad=True)
-
-When gradient computation is enabled:
-
-1. Input Handling:
-```python
-# Variable nodes create gradient-enabled tensors
-if self.t_name == "var" and self.requires_grad:
-    result = varval[:, var_idx].clone()
-    result.requires_grad_(True)
-```
-
-2. Forward Pass:
-- All operations use PyTorch's autograd system
-- Intermediate results maintain gradient information
-- Results are cached for backward pass
-
-3. Gradient Calculation:
-```python
-def forward_with_gradients(self, varval):
-    """
-    Performs forward pass and computes gradients for each input vector.
-    Returns:
-        outputs: Tensor (N,) containing scalar outputs
-        gradients: Tensor (N, num_vars) containing gradients
-    """
-    outputs = self.forward(varval)
-    gradients = torch.autograd.functional.vjp(
-        self.forward,
-        varval,
-        v=torch.ones_like(outputs),
-        create_graph=self.requires_grad
-    )[1]
-    return outputs, gradients
-```
-
-4. Gradient Usage:
-- Gradients are used in inverse function approximation
-- Help guide the optimization process
-- Enable sensitivity analysis of the model
-- Can be used for additional regularization
+#### Unique Expression Tracking
+The evolution process maintains diversity by:
+1. Tracking unique expressions using a set
+2. Attempting multiple crossovers/mutations to generate new expressions
+3. Only adding models with unique mathematical expressions to the population
 
 ### Error Calculation
 
 The total error of a model combines multiple components:
-
 ```python
-def eval_tree_error(self, data):
-    # Forward pass error (MSE)
-    y_pred = self.forward(X)
-    mse_loss = calculate_mse(y_pred, y)
-    
-    # Domain penalty
-    domain_penalty = self.start_node.get_total_domain_penalty()
-    domain_penalty /= len(y)  # Normalize by sample size
-    
-    # Inverse error (if enabled)
-    if self.requires_grad:
-        inv_loss = self.eval_inv_error(data)
-    else:
-        inv_loss = 0
-    
-    # Tree complexity penalty
-    complexity_penalty = 10 * self.max_num_of_node
-    
-    # Total error
-    self.error = mse_loss + complexity_penalty + inv_loss + domain_penalty
+error = forward_loss + domain_penalty + inv_loss(if REQUIRES_GRAD is True)
 ```
 
-This comprehensive error calculation ensures that:
-- The model fits the data well (MSE)
-- Respects domain constraints
-- Maintains reasonable complexity
-- Has good inverse function behavior (if enabled)
+Where:
+- `forward_loss`: Mean squared error on predictions
+- `domain_penalty`: Penalty for violating function domain constraints
+- `inv_loss`: Error from inverse function approximation (if enabled)
+
+## Performance Tips
+- Use smaller population sizes for initial testing
+- Enable REQUIRES_GRAD only when inverse error is needed
+- Use NSGA-II selection for better diversity
+- Adjust mutation and crossover probabilities based on problem complexity
+- Use appropriate max_depth for your problem
+- Consider enabling constant optimization for problems requiring precise constants
