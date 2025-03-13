@@ -6,101 +6,108 @@ A Python implementation of symbolic regression that combines genetic programming
 
 ### PSEUDO CODE
 
+```
 SYMBOLIC REGRESSION ALGORITHM
+============================
 
 1. INITIALIZATION
-   1.1. Load configuration parameters from parameters.py
-   1.2. Create diverse initial population:
-       - Ensure each function appears at least once as root
-       - Create one tree with a constant node if REQUIRES_CONST is False
-       - Fill remaining population with unique random trees
-   1.3. Initialize set of unique expressions
+----------------
+1.1. Load configuration parameters from parameters.py
+1.2. Create diverse initial population:
+    - Ensure each function appears at least once as root
+    - Create one tree with a constant node if REQUIRES_CONST is False
+    - Fill remaining population with unique random trees
+1.3. Initialize set of unique expressions
 
 2. EVOLUTION LOOP (for num_epochs iterations)
-   2.1. Track unique expressions in current population
-   2.2. For each model in population:
-       - Create copy for evaluation
-   
-   2.3. If not first epoch:
-       a) CROSSOVER PHASE
-          - For each model:
-              * Try up to 10 times to create unique offspring
-              * Perform crossover with random other model
-              * Add to evaluation list if expression is unique
-       
-       b) EVALUATION PHASE
-          - Evaluate all models:
-              * Calculate forward loss (MSE)
-              * Add domain penalty if applicable
-              * Calculate inverse error if REQUIRES_GRAD is true
-       
-       c) SELECTION PHASE
-          - If SELECTION_METHOD is "NSGA-II":
-              * Perform non-dominated sorting into fronts
-              * Calculate crowding distance within fronts
-              * Select models based on front rank and distance
-          - If SELECTION_METHOD is "top_k":
-              * Sort by total error
-              * Select top k models
-       
-       d) MUTATION PHASE
-          - For each selected model:
-              * Try up to 10 times to create unique mutant
-              * Apply mutation with probability MUTATION_PROB
-              * Apply constant mutation if REQUIRES_CONST is False
-              * Add to population if expression is unique
+------------------------------------------
+2.1. Track unique expressions in current population
+2.2. For each model in population:
+    - Create copy for evaluation
 
-   2.4. If REQUIRES_CONST and epoch % CONST_OPT_FREQUENCY == 0:
-        - Optimize constants in population
-   
-   2.5. Evaluate all models in current population
-   
-   2.6. Track and update best model:
-        - Update if current model has lower error
-        - Store error history
-        - Check for early stopping if min_loss < 0.0001
+2.3. If not first epoch:
+    a) CROSSOVER PHASE
+       For each model:
+       - Try up to 10 times to create unique offspring
+       - Perform crossover with random other model
+       - Add to evaluation list if expression is unique
+    
+    b) EVALUATION PHASE
+       Evaluate all models:
+       - Calculate forward loss (MSE)
+       - Add domain penalty if applicable
+       - Calculate inverse error if REQUIRES_GRAD is true
+    
+    c) SELECTION PHASE
+       If SELECTION_METHOD is "NSGA-II":
+       - Perform non-dominated sorting into fronts
+       - Calculate crowding distance within fronts
+       - Select models based on front rank and distance
+       If SELECTION_METHOD is "top_k":
+       - Sort by total error
+       - Select top k models
+    
+    d) MUTATION PHASE
+       For each selected model:
+       - Try up to 10 times to create unique mutant
+       - Apply mutation with probability MUTATION_PROB
+       - Apply constant mutation if REQUIRES_CONST is False
+       - Add to population if expression is unique
+
+2.4. If REQUIRES_CONST and epoch % CONST_OPT_FREQUENCY == 0:
+     - Optimize constants in population
+
+2.5. Evaluate all models in current population
+
+2.6. Track and update best model:
+     - Update if current model has lower error
+     - Store error history
+     - Check for early stopping if min_loss < 0.0001
 
 3. MODEL EVALUATION
-   3.1. Calculate error components:
-       - Forward loss (MSE between predictions and targets)
-       - Domain penalty (for function domain violations)
-       - Inverse error (if REQUIRES_GRAD is true)
-   
-   3.2. Total error calculation:
-       error = forward_loss + domain_penalty + inv_loss
+-----------------
+3.1. Calculate error components:
+    - Forward loss (MSE between predictions and targets)
+    - Domain penalty (for function domain violations)
+    - Inverse error (if REQUIRES_GRAD is true)
+
+3.2. Total error calculation:
+    error = forward_loss + domain_penalty + inv_loss
 
 4. TREE OPERATIONS
+----------------
+4.1. Build Random Tree:
+    - Input: num_vars, max_depth, functions, requires_grad, allow_constants
+    - Recursively build tree up to max_depth
+    - Return variable node or constant node at leaves
+    - Ensure unique expressions in population
 
-   4.1. Build Random Tree:
-       - Input: num_vars, max_depth, functions, requires_grad, allow_constants
-       - Recursively build tree up to max_depth
-       - Return variable node or constant node at leaves
-       - Ensure unique expressions in population
+4.2. Mutation:
+    - Randomly select node
+    - Replace with compatible function (same parity)
+    - Maintain tree structure
+    - Try multiple times for unique expression
 
-   4.2. Mutation:
-       - Randomly select node
-       - Replace with compatible function (same parity)
-       - Maintain tree structure
-       - Try multiple times for unique expression
+4.3. Crossover:
+    - Select random nodes from two parents
+    - Exchange subtrees
+    - Validate resulting tree
+    - Ensure unique expression
 
-   4.3. Crossover:
-       - Select random nodes from two parents
-       - Exchange subtrees
-       - Validate resulting tree
-       - Ensure unique expression
-
-   4.4. Constant Optimization:
-       - Periodically optimize constant values
-       - Only if REQUIRES_CONST is true
-       - Use gradient-based optimization
+4.4. Constant Optimization:
+    - Periodically optimize constant values
+    - Only if REQUIRES_CONST is true
+    - Use gradient-based optimization
 
 5. OUTPUT
-   5.1. Return best model found during evolution
-   5.2. Plot error history
-   5.3. Display final statistics:
-       - Best error achieved
-       - Number of unique expressions found
-       - Final mathematical expression
+--------
+5.1. Return best model found during evolution
+5.2. Plot error history
+5.3. Display final statistics:
+    - Best error achieved
+    - Number of unique expressions found
+    - Final mathematical expression
+```
 
 The implementation consists of several Python modules:
 
