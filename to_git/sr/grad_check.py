@@ -88,11 +88,11 @@ data = torch.column_stack((X_tensor, Y_tensor))
 # First, create variable node (x)
 var_node = Node("var", 1, FUNCTIONS['ident_'].func, [0], requires_grad=True)
 
-# Create multiplication node (x * x)
-mult_node = Node("func", 2, FUNCTIONS['mult_'].func, [safe_deepcopy(var_node), safe_deepcopy(var_node)], requires_grad=True)
+# Create pow2 node (x^2) - note that pow2_ is a unary function
+pow2_node = Node("func", 1, FUNCTIONS['pow2_'].func, [var_node], requires_grad=True)
 
 # Create the tree
-tree = Tree(mult_node, requires_grad=True)
+tree = Tree(pow2_node, requires_grad=True)
 tree.num_vars = 1  # Set number of variables
 
 # Evaluate tree error

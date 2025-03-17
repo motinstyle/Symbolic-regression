@@ -123,17 +123,31 @@ class Node:
         if self.t_name == "var":
             expr = f"x{self.data[0]}"
         elif self.t_name == "ident":
-            if REQUIRES_CONST:
-                expr = f"x{self.data[0]}" if isinstance(self.data[0], int) else "1"
+            if isinstance(self.data[0], int):
+                expr = f"x{self.data[0]}"
             else:
                 expr = str(float(self.data[0]) if isinstance(self.data, torch.Tensor) else self.data)
         else:
             if self.parity == 1:
                 child_expr = self.data[0].to_math_expr()
                 if self.func_info:
-                    expr = f"{self.func_info.name.replace('_', '')}({child_expr})"
+                    func_name = self.func_info.name.replace('_', '')
+                    # Special handling for power functions
+                    if func_name == 'pow2':
+                        expr = f"({child_expr})^2"
+                    elif func_name == 'pow3':
+                        expr = f"({child_expr})^3"
+                    else:
+                        expr = f"{func_name}({child_expr})"
                 else:
-                    expr = f"{self.func.__name__}({child_expr})"
+                    # Handle power functions in func.__name__
+                    func_name = self.func.__name__.replace('_', '')
+                    if func_name == 'pow2':
+                        expr = f"({child_expr})^2"
+                    elif func_name == 'pow3':
+                        expr = f"({child_expr})^3"
+                    else:
+                        expr = f"{func_name}({child_expr})"
             else:
                 left_expr = self.data[0].to_math_expr()
                 right_expr = self.data[1].to_math_expr()
@@ -151,12 +165,9 @@ class Node:
                     expr = f"{self.func.__name__}({left_expr}, {right_expr})"
 
         # Add constants if required and they exist
-        if REQUIRES_CONST:# and isinstance(self.scale, torch.Tensor):
-            print("in to_math_expr REQUIRES_CONST:")
+        if REQUIRES_CONST:
             scale = self.scale.item()
             bias = self.bias.item()
-            print("self.scale:", self.scale, "self.bias:", self.bias)
-            print("scale:", scale, "bias:", bias)
             if scale != 1 or bias != 0:
                 if scale != 1:
                     expr = f"{scale}*({expr})"
@@ -222,6 +233,12 @@ class Tree:
         self.inv_loss = 0
         self.domain_loss = 0
         self.max_num_of_node = 0
+
+        # NSGA-II
+        self.crowding_distance = 0
+        self.domination_count = 0
+        self.dominated_models = None
+        self.is_unique = True
 
         self.num_vars = None  # Will be set during evaluation
         self.requires_grad = requires_grad
@@ -330,14 +347,10 @@ class Tree:
     # forward pass with gradients if gradient is required (for inverse pass)
     def forward_with_gradients(self, varval: torch.Tensor, cache: bool = True):
         """
-        Выполняет прямой проход для всего входного тензора и вычисляет градиенты для каждого входного вектора.
+        Performs forward pass for the entire input tensor and calculates gradients for each input vector.
 
         Args:
-            varval: Входной тензор размерности (N, num_vars), где N — количество входных векторов.
-
-        Returns:
-            outputs: Тензор размерности (N,), содержащий скалярные выходы для каждого входного вектора.
-            gradients: Тензор размерности (N, num_vars), содержащий градиенты по каждому входному вектору.
+            varval: Input tensor of shape (N, num_vars), where N is the number of input vectors.
         """
         # print("varval.shape:", varval.shape)
 
@@ -452,10 +465,12 @@ class Tree:
 
             # quit()
             if inv_error:
-                forward_loss = torch.mean((y_pred - y_true) ** 2).item()
+                # forward_loss = torch.mean((y_pred - y_true) ** 2).item()
+                forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
                 error = self.eval_inv_error(data) + forward_loss
             else:
-                error = torch.mean((y_pred - y_true) ** 2).item()
+                # error = torch.mean((y_pred - y_true) ** 2).item()           # MSE
+                error = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item() # RMSE
                 # error = calculate_mse(y_pred, y_true).item()
                 
                 # # Add domain penalty if applicable
@@ -620,45 +635,61 @@ class Tree:
                     return f"x{node}"
                 return str(node)
             
-            # Build base expression
+            # Handle variable nodes
+            if node.t_name == "var":
+                if isinstance(node.data, list) and len(node.data) == 1 and isinstance(node.data[0], int):
+                    return f"x{node.data[0]}"
+                return f"x{node.data}"
+            
+            # Handle constant/identity nodes
+            if node.t_name == "ident":
+                if isinstance(node.data, torch.Tensor):
+                    return f"{node.data.item()}"
+                return str(node.data)
+            
+            # Build base expression for function nodes
             if node.parity == 1:
                 inner = _build_expr(node.data[0])
                 # Handle all unary functions
                 func_name = node.func.__name__
                 if func_name.endswith('_'):  # Remove trailing underscore
                     func_name = func_name[:-1]
-                expr = f"{func_name}({inner})"
+                # Special handling for power functions
+                if func_name == 'pow2':
+                    expr = f"({inner})^2"
+                elif func_name == 'pow3':
+                    expr = f"({inner})^3"
+                else:
+                    expr = f"{func_name}({inner})"
             else:
                 left = _build_expr(node.data[0])
                 right = _build_expr(node.data[1])
                 
                 # Handle binary operations with special formatting
                 func_name = node.func.__name__
-                if func_name == 'sum_':
+                if func_name.endswith('_'):
+                    func_name = func_name[:-1]
+                
+                if func_name == 'sum':
                     expr = f"({left} + {right})"
-                elif func_name == 'mult_':
-                    expr = f"({left} * {right})"
-                elif func_name == 'div_':
+                elif func_name == 'mult':
+                    expr = f"{left} * {right}"
+                elif func_name == 'div':
                     expr = f"({left} / {right})"
-                elif func_name == 'pow_':
-                    expr = f"({left} ^ {right})"
+                # elif func_name == 'pow':
+                #     expr = f"({left})^{right}"
                 else:
-                    # Remove trailing underscore for other binary functions
-                    if func_name.endswith('_'):
-                        func_name = func_name[:-1]
                     expr = f"{func_name}({left}, {right})"
                 
             # Add constants if required and they exist
             if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
                 scale = node.scale.item()
                 bias = node.bias.item()
-
                 if scale != 1 or bias != 0:
                     if scale != 1:
                         expr = f"{scale}*({expr})"
                     if bias != 0:
                         expr = f"({expr} + {bias})"
-
             return expr
                 
         return _build_expr(self.start_node)
@@ -818,70 +849,60 @@ def calculate_mse(output: torch.Tensor, example: torch.Tensor) -> torch.Tensor:
         return NAN_PUNISHMENT * torch.isnan(output).sum()
     return error
 
-# calculate mean error of a list of models
-def get_mean_error(models):
-    suma = 0
-    for model in models:
-        suma += model.error
-    return suma/len(models)
+def get_rmse_stats(models):
+    """Calculate RMSE statistics for a list of models"""
+    errors = [model.error for model in models]  # Already RMSE values
+    return {
+        'all_rmse': errors,
+        'mean_rmse': np.mean(errors),
+        'median_rmse': np.median(errors),
+        'best_rmse': min(errors)
+    }
 
-# perform non-dominated sorting of models based on their objectives
-def non_dominated_sort(models):
+def compute_domination(models: List[Tree]):
     """
-    Perform non-dominated sorting of models based on their objectives.
-    Returns a list of fronts, where each front is a list of models.
+    Compute domination relationships between models and mark duplicates.
+    
+    Args:
+        models: List of Tree models to analyze
     """
-    if not models:
-        return []
+    # Reset all parameters
+    for m in models:
+        m.domination_count = 0
+        m.dominated_models = []
+        m.is_unique = True
 
-    fronts = [[]]  # Initialize with empty first front
-    for model in models:
-        model.domination_count = 0  # Number of models that dominate this model
-        model.dominated_models = []  # Models that this model dominates
-        
-        for other_model in models:
-            if model == other_model:
+    n = len(models)
+    # Step 1: Identify duplicates by comparing mathematical expressions
+    for i in range(n):
+        for j in range(i+1, n):
+            if models[i].to_math_expr() == models[j].to_math_expr() or \
+                (models[i].forward_loss == models[j].forward_loss and \
+                 models[i].max_num_of_node == models[j].max_num_of_node and \
+                 models[i].domain_loss == models[j].domain_loss) or \
+                (np.allclose(models[i].forward_loss, models[j].forward_loss, atol=1e-1) and \
+                 models[i].max_num_of_node == models[j].max_num_of_node and \
+                 np.allclose(models[i].domain_loss, models[j].domain_loss, atol=1e-1)):
+                models[j].is_unique = False
+
+    # Step 2: Compute domination only among unique models
+    for i in range(n):
+        if not models[i].is_unique:
+            continue
+        for j in range(n):
+            if i == j or not models[j].is_unique:
                 continue
-                
-            # Compare objectives (error and complexity)
-            if (model.forward_loss <= other_model.forward_loss and 
-                model.max_num_of_node <= other_model.max_num_of_node and
-                model.domain_loss <= other_model.domain_loss and
-                (model.forward_loss < other_model.forward_loss or 
-                 model.max_num_of_node < other_model.max_num_of_node or
-                 model.domain_loss < other_model.domain_loss)):
-                model.dominated_models.append(other_model)
-            elif (other_model.forward_loss <= model.forward_loss and 
-                  other_model.max_num_of_node <= model.max_num_of_node and
-                  other_model.domain_loss <= model.domain_loss and
-                  (other_model.forward_loss < model.forward_loss or 
-                   other_model.max_num_of_node < model.max_num_of_node or
-                   other_model.domain_loss < model.domain_loss)):
-                model.domination_count += 1
-        
-        if model.domination_count == 0:  # Model belongs to first front
-            fronts[0].append(model)
-    
-    if not fronts[0]:  # If no models in first front, return empty list
-        return []
-    
-    current_front = 0
-    while current_front < len(fronts):
-        next_front = []
-        for model in fronts[current_front]:
-            for dominated_model in model.dominated_models:
-                dominated_model.domination_count -= 1
-                if dominated_model.domination_count == 0:
-                    next_front.append(dominated_model)
-        
-        current_front += 1
-        if next_front:
-            fronts.append(next_front)
-    
-    return fronts
+            # Check if model i dominates model j
+            if (models[i].forward_loss <= models[j].forward_loss and \
+                models[i].max_num_of_node <= models[j].max_num_of_node and \
+                models[i].domain_loss <= models[j].domain_loss and \
+                (models[i].forward_loss < models[j].forward_loss or \
+                 models[i].max_num_of_node < models[j].max_num_of_node or \
+                 models[i].domain_loss < models[j].domain_loss)):
+                models[i].dominated_models.append(models[j])
+                models[j].domination_count += 1
 
-# calculate crowding distance for models in a front
-def calculate_crowding_distance(front):
+def calculate_crowding_distance(front: List[Tree]):
     """
     Calculate crowding distance for models in a front.
     Modifies the models in place by setting their crowding_distance attribute.
@@ -920,80 +941,116 @@ def calculate_crowding_distance(front):
             distance = (getattr(front[i + 1], objective) - getattr(front[i - 1], objective)) / obj_range
             front[i].crowding_distance += distance
 
-# select models based on specified method (top_k or NSGA-II) and parameters
-def model_selection(models, params=None):
+def non_dominated_sort(models: List[Tree]) -> List[List[Tree]]:
     """
-    Select models based on specified method and parameters.
+    Perform non-dominated sorting (NSGA-II) on models with uniqueness check.
     
     Args:
-        models: List of models to select from
-        method: Selection method ("top_k" or "NSGA-II")
-        params: Dictionary of parameters (population_size, etc.)
+        models: List of Tree models to sort
+    
+    Returns:
+        List of fronts, where each front is a list of non-dominated models
+    """
+    if not models:
+        return []
+    
+    # Compute domination relationships and mark duplicates
+    compute_domination(models)
+    
+    # Filter only unique models
+    unique_models = [m for m in models if m.is_unique]
+    if not unique_models:
+        return []
+    
+    fronts = [[]]  # Initialize with empty first front
+    
+    # First front: models not dominated by any other model
+    first_front = [m for m in unique_models if m.domination_count == 0]
+    if not first_front:
+        return []
+    
+    fronts[0] = first_front
+    current_front = 0
+    
+    while current_front < len(fronts):
+        next_front = []
+        for model in fronts[current_front]:
+            for dominated in model.dominated_models:
+                dominated.domination_count -= 1
+                if dominated.domination_count == 0:
+                    next_front.append(dominated)
+        
+        current_front += 1
+        if next_front:
+            fronts.append(next_front)
+    
+    return fronts
+
+def model_selection(models: List[Tree], params: Optional[Dict] = None) -> List[Tree]:
+    """
+    Select models based on specified method (NSGA-II or top_k).
+    
+    Args:
+        models: List of Tree models to select from
+        params: Dictionary with selection parameters
     
     Returns:
         List of selected models
     """
-    if not models:  # Handle empty input
+    if not models:
         return []
-        
+    
     if params is None:
         params = {}
     
-    population_size = params.get("population_size", 10)
+    population_size = params.get("population_size", POPULATION_SIZE)
+    method = params.get("method", SELECTION_METHOD)
     
-    # Ensure we have valid models to work with
-    valid_models = [model for model in models if hasattr(model, 'error')]
-    if not valid_models:
-        return []
-    
-    method = params.get("method", "top_k")
-    # print(f"Method: {method}")
-
-    new_models = []
     try:
-        if method == "top_k":
-            valid_models.sort(key=lambda x: x.error)
-            new_models = [safe_deepcopy(model) for model in valid_models[:population_size]]
-        
-        elif method == "NSGA-II":
-            # Step 1: Non-dominated sorting
-            fronts = non_dominated_sort(valid_models)
-            if not fronts:  # If sorting fails, fall back to top_k
+        if method == "NSGA-II":
+            # Get sorted fronts with uniqueness check
+            fronts = non_dominated_sort(models)
+            print("len(fronts):", len(fronts))
+            if not fronts:
+                # Fall back to top_k if sorting fails
+                valid_models = [m for m in models if m.is_unique and hasattr(m, 'error')]
                 valid_models.sort(key=lambda x: x.error)
                 return [safe_deepcopy(model) for model in valid_models[:population_size]]
             
-            # Step 2: Calculate crowding distance for each front
-            for front in fronts:
-                calculate_crowding_distance(front)
-            
-            # Step 3: Select models based on non-domination rank and crowding distance
             selected_models = []
             front_idx = 0
             
-            while len(selected_models) < population_size and front_idx < len(fronts):
+            # Add complete fronts while possible
+            while front_idx < len(fronts) and len(selected_models) + len(fronts[front_idx]) <= population_size:
                 current_front = fronts[front_idx]
-                # Sort by crowding distance within the front
-                current_front.sort(key=lambda x: x.crowding_distance, reverse=True)
-                
-                # Add models from current front
-                remaining_slots = population_size - len(selected_models)
-                selected_models.extend(current_front[:remaining_slots])
+                selected_models.extend([safe_deepcopy(model) for model in current_front])
                 front_idx += 1
             
-            new_models = [safe_deepcopy(model) for model in selected_models]
+            # If we need more models and there are more fronts
+            if len(selected_models) < population_size and front_idx < len(fronts):
+                current_front = fronts[front_idx]
+                # Calculate crowding distance for the last front
+                calculate_crowding_distance(current_front)
+                # Sort by crowding distance (higher is better)
+                current_front.sort(key=lambda x: x.crowding_distance, reverse=True)
+                # Add remaining models to reach population_size
+                remaining = population_size - len(selected_models)
+                selected_models.extend([safe_deepcopy(model) for model in current_front[:remaining]])
+            
+            return selected_models
+        
+        else:  # "top_k" selection
+            # Sort by error, considering only unique models
+            valid_models = [m for m in models if m.is_unique and hasattr(m, 'error')]
+            valid_models.sort(key=lambda x: x.error)
+            return [safe_deepcopy(model) for model in valid_models[:population_size]]
     
     except Exception as e:
         print(f"Warning: Model selection failed with error: {str(e)}")
         # Fall back to simple top_k selection
+        valid_models = [m for m in models if hasattr(m, 'error')]
         valid_models.sort(key=lambda x: x.error)
-        new_models = [safe_deepcopy(model) for model in valid_models[:population_size]]
-    
-    # Ensure we return at least one model
-    if not new_models and valid_models:
-        valid_models.sort(key=lambda x: x.error)
-        new_models = [safe_deepcopy(valid_models[0])]
-    
-    return new_models
+        return [safe_deepcopy(model) for model in valid_models[:population_size]]
 
 # optimize constants for a population of trees
 def optimize_population_constants(models: List[Tree], training_data: Union[np.ndarray, torch.Tensor], max_iter: int = 50) -> None:
@@ -1014,6 +1071,29 @@ def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndar
         else:
             model.eval_tree_error(training_data)
 
+def tournament(model1: Tree, model2: Tree):
+    """Tournament selection"""
+    # Select two random models
+    if model1.error < model2.error and \
+        model1.max_num_of_node < model2.max_num_of_node and \
+        model1.domain_loss < model2.domain_loss and \
+        model1.forward_loss < model2.forward_loss and \
+        model1.inv_loss < model2.inv_loss:
+        return model1
+    elif model1.error > model2.error and \
+        model1.max_num_of_node > model2.max_num_of_node and \
+        model1.domain_loss > model2.domain_loss and \
+        model1.forward_loss > model2.forward_loss and \
+        model1.inv_loss > model2.inv_loss:
+        return model2
+    else:
+# TODO: if NSGA is used, else compute crowding distance for tournament selection =========================================
+        model_with_max_crowding_distance = max(model1, model2, key=lambda x: x.crowding_distance)
+        # print("model_with_max_crowding_distance:", model_with_max_crowding_distance.to_math_expr(), "crowding_distance:", model_with_max_crowding_distance.crowding_distance)
+        return model_with_max_crowding_distance
+    
+    
+
 # evolution process with crossover, mutation, and constant optimization(if REQUIRES_CONST is True)
 def evolution(num_of_epochs, models, training_data):
     """evolution process with crossover, mutation, and constant optimization"""
@@ -1022,12 +1102,14 @@ def evolution(num_of_epochs, models, training_data):
         print(model.to_math_expr(), end="\n")
 
     # initialize arrays for tracking progress
-    mean_error_arr = np.zeros(num_of_epochs)
+    mean_rmse_arr = np.zeros(num_of_epochs)
+    median_rmse_arr = np.zeros(num_of_epochs)
+    best_rmse_arr = np.zeros(num_of_epochs)
     
     # initialize best model and best error
     best_model = safe_deepcopy(models[0])
     min_loss = float('inf')
-    best_error = float('inf')
+    best_rmse = float('inf')
 
     # Model selection (choose method of selection based on params)
     selection_params = {
@@ -1091,9 +1173,9 @@ def evolution(num_of_epochs, models, training_data):
             for model in models:
                 # Try up to 10 times to get a unique expression through crossover
                 for _ in range(10):
-                    new_model = crossover(model, models[np.random.randint(0, len(models))])
+                    new_model = crossover(model, tournament(models[np.random.randint(0, len(models))], models[np.random.randint(0, len(models))]))
                     while new_model.max_num_of_node > new_model.max_depth:
-                        new_model = crossover(model, models[np.random.randint(0, len(models))])
+                        new_model = crossover(model, tournament(models[np.random.randint(0, len(models))], models[np.random.randint(0, len(models))]))
                     
                     expr = new_model.to_math_expr()
                     if expr not in unique_expressions:
@@ -1102,14 +1184,12 @@ def evolution(num_of_epochs, models, training_data):
                         break
             print(f"Number of unique expressions after crossover: {len(unique_expressions)}")
 
-
             # Evaluate models (choose variant of evaluation based on requires_grad)
             set_evaluated_error(models_to_eval, training_data, epoch)
 
             # select the best models
             models_to_eval = model_selection(models_to_eval, selection_params)
             unique_expressions = {model.to_math_expr() for model in models_to_eval}
-            # print("len(models_to_eval) after selection:", len(models_to_eval))
 
             # mutate from best models
             new_models = []
@@ -1177,7 +1257,6 @@ def evolution(num_of_epochs, models, training_data):
         # Best models selection (choose method of selection based on params)
         selected_models = model_selection(models_to_eval, selection_params)
         
-        
         # Ensure we have models
         if not selected_models:
             print(f"No selected models, using {selection_params['method']}")
@@ -1186,15 +1265,17 @@ def evolution(num_of_epochs, models, training_data):
         else:
             models = selected_models
 
-        # Track progress (mean error of the population)
-        mean_error = get_mean_error(models)
-        mean_error_arr[epoch] = mean_error
+        # Track progress (RMSE statistics)
+        rmse_stats = get_rmse_stats(models)
+        mean_rmse_arr[epoch] = rmse_stats['mean_rmse']
+        median_rmse_arr[epoch] = rmse_stats['median_rmse']
+        best_rmse_arr[epoch] = rmse_stats['best_rmse']
 
         # Track best model
-        if models[0].error < best_error:
-            best_error = models[0].error
+        if models[0].error < best_rmse:
+            best_rmse = models[0].error
             best_model = safe_deepcopy(models[0])
-            print("best_model:", best_model.to_math_expr(), "best_error:", best_error)
+            print("best_model:", best_model.to_math_expr(), "best_rmse:", best_rmse)
             print("forward_loss:", best_model.forward_loss, "inv_loss:", best_model.inv_loss, "max_num_of_node:", best_model.max_num_of_node)
 
         # global min_loss
@@ -1203,37 +1284,35 @@ def evolution(num_of_epochs, models, training_data):
             min_loss = models[0].forward_loss
             if min_loss < 0.0001:
                 print("min_loss < 0.0001")
-                print(f"Current best error: {best_error:.6f}")
+                print(f"Current best RMSE: {best_rmse:.6f}")
                 print(f"Number of unique expressions: {len(unique_expressions)}")
                 for model in selected_models[:5]:
                     print(model.to_math_expr(), end="\n")
-                quit()
+                # quit()
 
         # Print best model and its expression every 10 epochs
         if (epoch + 1) % 10 == 0:
-            print(f"Current best error: {best_error:.6f}")
+            print(f"Current best RMSE: {best_rmse:.6f}")
+            print(f"Current mean RMSE: {rmse_stats['mean_rmse']:.6f}")
+            print(f"Current median RMSE: {rmse_stats['median_rmse']:.6f}")
             print(f"Number of unique expressions: {len(unique_expressions)}")
             for model in selected_models[:5]:
                 print(model.to_math_expr(), end="\n")
 
     # Store results
-    best_model.error_history = mean_error_arr
+    best_model.error_history = mean_rmse_arr
     best_model.min_loss = min_loss
-    best_model.best_error = best_error
+    best_model.best_rmse = best_rmse
     
-    # Plot error history
-    plt.figure(figsize=(10, 6))
-    plt.plot(mean_error_arr)
-    plt.title('Training Error History')
-    plt.xlabel('Epoch')
-    plt.ylabel('Error')
-    plt.grid(True)
-    plt.yscale('log')
-    plt.show()    
+    # Plot error history using the new visualization function
+    from visual import plot_rmse_history
+    plot_rmse_history(mean_rmse_arr, median_rmse_arr, best_rmse_arr)
     
     # print final results
     print(f"Final min_loss: {min_loss}")
-    print(f"Best error achieved: {best_error:.6f}")
+    print(f"Best RMSE achieved: {best_rmse:.6f}")
+    print(f"Final mean RMSE: {rmse_stats['mean_rmse']:.6f}")
+    print(f"Final median RMSE: {rmse_stats['median_rmse']:.6f}")
     print(f"Total number of unique expressions found: {len(unique_expressions)}")
 
     # return best model
@@ -1242,7 +1321,7 @@ def evolution(num_of_epochs, models, training_data):
     print("sorted_selected_models:", [model.to_math_expr() for model in sorted(selected_models, key=lambda x: x.error)])
     for i, model in enumerate(sorted(selected_models, key=lambda x: x.error)):
         print(f"{i}: {model.to_math_expr()}")
-        print(f"   error: {model.error:.6f}")
+        print(f"   RMSE: {model.error:.6f}")
         print(f"   forward_loss: {model.forward_loss:.6f}")
         print(f"   inv_loss: {getattr(model, 'inv_loss', 0):.6f}")
         print(f"   domain_loss: {model.domain_loss:.6f}")

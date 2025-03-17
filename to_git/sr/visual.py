@@ -4,20 +4,12 @@ from mpl_toolkits.mplot3d import Axes3D
 
 def plot_results(X, y_true, y_pred, title="Model Comparison"):
     """Plot actual vs predicted results with error handling for invalid values."""
-    # Проверка на бесконечные или NaN значения
-
-    print("y_true.shape:", y_true.shape)
-    print("y_pred.shape:", y_pred.shape)
-    print("np.isfinite(y_true).shape:", np.isfinite(y_true).shape)
-    print("np.isfinite(y_pred).shape:", np.isfinite(y_pred).shape)
+    # Check for infinite or NaN values
     valid_mask = np.isfinite(y_true) & np.isfinite(y_pred)
-    print("valid_mask.shape:", valid_mask.shape)
     if isinstance(X, np.ndarray) and len(X.shape) == 2 and X.shape[1] == 2:
-        valid_mask &= np.all(np.isfinite(X), axis=1)  # Убедимся, что X тоже корректен
+        valid_mask &= np.all(np.isfinite(X), axis=1)  # Make sure X is also valid
 
-    # Отфильтруем только корректные данные
-    print("X.shape:", X.shape)
-    # print("valid_mask.shape:", valid_mask.shape)
+    # Filter only valid data
     X = X[valid_mask]
     y_true = y_true[valid_mask]
     y_pred = y_pred[valid_mask]
@@ -86,4 +78,50 @@ def plot_results(X, y_true, y_pred, title="Model Comparison"):
         plt.legend()
         plt.grid(True, alpha=0.3)
     
+    plt.show()
+
+def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse: np.ndarray, title: str = "Training Error History"):
+    """
+    Plot RMSE statistics history in three subplots.
+    
+    Args:
+        mean_rmse: Array of mean RMSE values over epochs
+        median_rmse: Array of median RMSE values over epochs
+        best_rmse: Array of best RMSE values over epochs
+        title: Title for the overall figure
+    """
+    plt.figure(figsize=(15, 5))
+    
+    # Mean RMSE subplot
+    plt.subplot(131)
+    plt.plot(mean_rmse, 'b-', label='Mean RMSE')
+    plt.title('Mean RMSE History')
+    plt.xlabel('Epoch')
+    plt.ylabel('RMSE')
+    plt.grid(True)
+    plt.yscale('log')
+    plt.legend()
+    
+    # Median RMSE subplot
+    plt.subplot(132)
+    plt.plot(median_rmse, 'g-', label='Median RMSE')
+    plt.title('Median RMSE History')
+    plt.xlabel('Epoch')
+    plt.ylabel('RMSE')
+    plt.grid(True)
+    plt.yscale('log')
+    plt.legend()
+    
+    # Best RMSE subplot
+    plt.subplot(133)
+    plt.plot(best_rmse, 'r-', label='Best RMSE')
+    plt.title('Best RMSE History')
+    plt.xlabel('Epoch')
+    plt.ylabel('RMSE')
+    plt.grid(True)
+    plt.yscale('log')
+    plt.legend()
+    
+    plt.suptitle(title)
+    plt.tight_layout()
     plt.show()

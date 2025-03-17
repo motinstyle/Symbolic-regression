@@ -369,7 +369,7 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     # Evaluate and visualize results
     print("Evaluating and visualizing results...")
     Y_aprox = evaluate_model(final_model, X_data)
-    print("Y_aprox.shape:", Y_aprox.shape)
+    # print("Y_aprox.shape:", Y_aprox.shape)
     
     # Convert tensors to numpy for plotting
     X_plot = X_data.detach().numpy()
@@ -379,9 +379,9 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     # Plot results
     if X_plot.shape[1] == 1:
         X_plot = X_plot.flatten()  # Flatten for 1D plotting
-        plot_results(X_plot, Y_true, Y_pred, "Model Comparison")
+        plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.to_math_expr()}")
     elif X_plot.shape[1] == 2:
-        plot_results(X_plot, Y_true, Y_pred, "Model Comparison")
+        plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.to_math_expr()}")
     
     # Print the final model
     print("\nFinal Model:")
@@ -420,10 +420,32 @@ if __name__ == "__main__":
     # # Y_data = 5*np.ones(100)  # Example target function: x^5
     # # Y_data = 1/(X_data) # Example target function: x^5
     
+    # if not FIXED_SEED:
+    #     models = []
+    #     for i in range(10):
+    #         model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^2")
+    #         models.append(model)
+    #     for model in models:
+    #         print(model.to_math_expr())
+    #         print(model.error)
+    #         print(model.forward_loss)
+    #     best_model = min(models, key=lambda x: x.error)
+    #     print("Best model:")
+    #     print(best_model.to_math_expr())
+    #     print(best_model.error)
+    #     print(best_model.forward_loss)
+    # else:
+    #     model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^2")
+    
+    # Example usage with multiple variables
+    print("\nMultiple variables example:")
+    X_data = np.random.uniform(-5, 5, (500, 2))  # 2 variables
+    Y_data = X_data[:, 0]**2 + X_data[:, 1]**2  # Example target function: x0^2 + x1^2
+    # Y_data = 2*X_data[:, 0] + 5*X_data[:, 1]  # Example target function: x0^2 + x1^2
     if not FIXED_SEED:
         models = []
         for i in range(10):
-            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^5")
+            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="2x0 + 5x1")
             models.append(model)
         for model in models:
             print(model.to_math_expr())
@@ -433,20 +455,14 @@ if __name__ == "__main__":
         print("Best model:")
         print(best_model.to_math_expr())
         print(best_model.error)
-        print(best_model.forward_loss)
+        print(best_model.forward_loss)    
     else:
-        model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^5")
-    
-    # Example usage with multiple variables
-    print("\nMultiple variables example:")
-    X_data = np.random.uniform(-5, 5, (100, 2))  # 2 variables
-    Y_data = X_data[:, 0]**2 + X_data[:, 1]**2  # Example target function: x0^2 + x1^2
-    model2 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x0^2 + x1^2")
+        model2 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="2x0 + 5x1")
 
-    # # Load and process dataset examples
-    data_list = load_data()
-    for func_name, data in data_list:
-        print(f"\nProcessing function: {func_name}")
-        run_evolution(data.iloc[:, :-1].values, data.iloc[:, -1].values, 
-                     requires_grad=REQUIRES_GRAD, target_func=func_name)
+    # # # Load and process dataset examples
+    # data_list = load_data()
+    # for func_name, data in data_list:
+    #     print(f"\nProcessing function: {func_name}")
+    #     run_evolution(data.iloc[:, :-1].values, data.iloc[:, -1].values, 
+    #                  requires_grad=REQUIRES_GRAD, target_func=func_name)
 
