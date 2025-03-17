@@ -413,39 +413,18 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
 if __name__ == "__main__":
     # Example usage with single variable
     print("Single variable example:")
-    X_data = np.linspace(1, 10, 100)  # Reshape to (100, 1)
+    X_data = np.linspace(-10, 10, 1000)  # Reshape to (100, 1)
     # X_data = np.linspace(-10, 10, 100)
-    Y_data = X_data**2  # Example target function: x^2
+    Y_data = X_data**5  # Example target function: x^2
+    # Y_data = np.e ** (-1*(X_data+4)**2)/2  # Example target function: x^2
     # Y_data = np.power(X_data.flatten(), 2)  # Example target function: x^5
     # # Y_data = 5*np.ones(100)  # Example target function: x^5
     # # Y_data = 1/(X_data) # Example target function: x^5
     
-    # if not FIXED_SEED:
-    #     models = []
-    #     for i in range(10):
-    #         model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^2")
-    #         models.append(model)
-    #     for model in models:
-    #         print(model.to_math_expr())
-    #         print(model.error)
-    #         print(model.forward_loss)
-    #     best_model = min(models, key=lambda x: x.error)
-    #     print("Best model:")
-    #     print(best_model.to_math_expr())
-    #     print(best_model.error)
-    #     print(best_model.forward_loss)
-    # else:
-    #     model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^2")
-    
-    # Example usage with multiple variables
-    print("\nMultiple variables example:")
-    X_data = np.random.uniform(-5, 5, (500, 2))  # 2 variables
-    Y_data = X_data[:, 0]**2 + X_data[:, 1]**2  # Example target function: x0^2 + x1^2
-    # Y_data = 2*X_data[:, 0] + 5*X_data[:, 1]  # Example target function: x0^2 + x1^2
     if not FIXED_SEED:
         models = []
         for i in range(10):
-            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="2x0 + 5x1")
+            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^5")
             models.append(model)
         for model in models:
             print(model.to_math_expr())
@@ -455,9 +434,32 @@ if __name__ == "__main__":
         print("Best model:")
         print(best_model.to_math_expr())
         print(best_model.error)
-        print(best_model.forward_loss)    
+        print(best_model.forward_loss)
     else:
-        model2 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="2x0 + 5x1")
+        model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^5")
+    
+    # Example usage with multiple variables
+    # print("\nMultiple variables example:")
+    # X_data = np.random.uniform(-5, 5, (500, 2))  # 2 variables
+    # Y_data = X_data[:, 0]**2 + X_data[:, 1]**2  # Example target function: x0^2 + x1^2
+    # # Y_data = 2*X_data[:, 0] + 5*X_data[:, 1]  # Example target function: x0^2 + x1^2
+    # if not FIXED_SEED:
+    #     models = []
+    #     for i in range(10):
+    #         model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x0^2 + x1^2")
+    #         models.append(model)
+    #     for model in models:
+    #         print(model.to_math_expr())
+    #         print(model.error)
+    #         print(model.forward_loss)
+    #     best_model = min(models, key=lambda x: x.error)
+    #     print("Best model:")
+    #     print(best_model.to_math_expr())
+    #     print(best_model.error)
+    #     print(best_model.forward_loss)    
+    # else:
+    #     model2 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x0^2 + x1^2")
+    #     print(model2)
 
     # # # Load and process dataset examples
     # data_list = load_data()

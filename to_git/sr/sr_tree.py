@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from nodes import *
 from typing import List, Union, Optional, Dict
 from parameters import *
+import random
 
 # global min_loss for the best model
 # min_loss = float('inf')
@@ -233,6 +234,12 @@ class Tree:
         self.inv_loss = 0
         self.domain_loss = 0
         self.max_num_of_node = 0
+        self.error = 0
+        self.num_vars = None  # Will be set during evaluation
+        self.requires_grad = requires_grad
+        self._set_requires_grad(requires_grad)
+        self.enumerate_tree()
+        self.depth = self.get_tree_depth(self.start_node)  # Store current depth
 
         # NSGA-II
         self.crowding_distance = 0
@@ -240,12 +247,7 @@ class Tree:
         self.dominated_models = None
         self.is_unique = True
 
-        self.num_vars = None  # Will be set during evaluation
-        self.requires_grad = requires_grad
-        self._set_requires_grad(requires_grad)
         self.grad = None
-        
-        self.enumerate_tree()
 
     # recursively set requires_grad for all nodes
     def _set_requires_grad(self, requires_grad: bool):
@@ -260,20 +262,35 @@ class Tree:
 
     # string representation of the tree (start node, max number of nodes, error)
     def __str__(self):
-        return f"start: ({self.start_node}), max num: {self.max_num_of_node}, error: {self.error}"
+        return f"start: ({self.start_node}), max_node_num: {self.max_num_of_node}, depth: {self.depth}, error: {self.error}"
+    
+    def __repr__(self):
+        return self.__str__()
 
     # calculate depth of tree/subtree starting at node
     def get_tree_depth(self, node: Node) -> int:
-        """Calculate depth of tree/subtree starting at node"""
-        if node.t_name in ("var", "ident"):
+        """Calculate the depth of the tree starting from the given node"""
+        if node is None:
             return 0
-        return 1 + max(self.get_tree_depth(child) for child in node.data if isinstance(child, Node))
+        if node.t_name == "var" or (node.t_name == "ident" and not isinstance(node.data, list)):
+            return 0
+        
+        max_child_depth = 0
+        if isinstance(node.data, list):
+            for child in node.data:
+                child_depth = self.get_tree_depth(child)
+                max_child_depth = max(max_child_depth, child_depth)
+        
+        return max_child_depth + 1
 
-    # validate tree depth is within limits
+    def update_depth(self):
+        """Update the current depth of the tree"""
+        self.depth = self.get_tree_depth(self.start_node)
+
     def validate_tree_depth(self) -> bool:
-        """Check if tree depth is within limits"""
-        depth = self.get_tree_depth(self.start_node)
-        return depth <= self.max_depth
+        """Check if the tree depth is within the allowed maximum"""
+        self.update_depth()
+        return self.depth <= self.max_depth
 
     # get all variable indices used in the tree
     def get_var_indices(self, node: Optional[Node] = None) -> List[int]:
@@ -338,6 +355,7 @@ class Tree:
                     el.data = new_node.data
                     el.node_num = -1
                     self.enumerate_tree()
+                    self.update_depth()
                     return 
                 if el.t_name not in ("var", "ident"):
                     for d in el.data:
@@ -740,7 +758,11 @@ def safe_deepcopy(obj):
 
 # crossover two trees (combine parent1 with a node from parent2 with multivariable support)
 def crossover(p1: Tree, p2: Tree) -> Tree:
-    """Combine parent1 with a node from parent2 with multivariable support"""
+    """
+    Perform crossover between two parent trees.
+    Returns a new tree that is a copy of p1 with one of its subtrees replaced by a subtree from p2.
+    """
+    # Create a copy of the first parent
     child = safe_deepcopy(p1)
     
     # Get valid node indices (exclude variable nodes if they would cause invalid indices)
@@ -878,11 +900,13 @@ def compute_domination(models: List[Tree]):
         for j in range(i+1, n):
             if models[i].to_math_expr() == models[j].to_math_expr() or \
                 (models[i].forward_loss == models[j].forward_loss and \
-                 models[i].max_num_of_node == models[j].max_num_of_node and \
-                 models[i].domain_loss == models[j].domain_loss) or \
-                (np.allclose(models[i].forward_loss, models[j].forward_loss, atol=1e-1) and \
-                 models[i].max_num_of_node == models[j].max_num_of_node and \
-                 np.allclose(models[i].domain_loss, models[j].domain_loss, atol=1e-1)):
+                #  models[i].max_num_of_node == models[j].max_num_of_node and \
+                 models[i].depth == models[j].depth and \
+                 models[i].domain_loss == models[j].domain_loss):# or \
+                # (np.allclose(models[i].forward_loss, models[j].forward_loss, atol=1e-1) and \
+                # #  models[i].max_num_of_node == models[j].max_num_of_node and \
+                #  models[i].depth == models[j].depth and \
+                #  np.allclose(models[i].domain_loss, models[j].domain_loss, atol=1e-1)):
                 models[j].is_unique = False
 
     # Step 2: Compute domination only among unique models
@@ -894,10 +918,11 @@ def compute_domination(models: List[Tree]):
                 continue
             # Check if model i dominates model j
             if (models[i].forward_loss <= models[j].forward_loss and \
-                models[i].max_num_of_node <= models[j].max_num_of_node and \
+                # models[i].max_num_of_node <= models[j].max_num_of_node and \
+                models[i].depth <= models[j].depth and \
                 models[i].domain_loss <= models[j].domain_loss and \
                 (models[i].forward_loss < models[j].forward_loss or \
-                 models[i].max_num_of_node < models[j].max_num_of_node or \
+                 models[i].depth < models[j].depth or \
                  models[i].domain_loss < models[j].domain_loss)):
                 models[i].dominated_models.append(models[j])
                 models[j].domination_count += 1
@@ -921,7 +946,8 @@ def calculate_crowding_distance(front: List[Tree]):
     
     # Calculate crowding distance for each objective
     # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node', 'domain_loss']
-    objectives = ['forward_loss', 'inv_loss', 'max_num_of_node']
+    # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node']
+    objectives = ['forward_loss', 'inv_loss', 'depth']
     
 
     for objective in objectives:
@@ -1265,6 +1291,8 @@ def evolution(num_of_epochs, models, training_data):
         else:
             models = selected_models
 
+        models.sort(key=lambda x: x.error)
+
         # Track progress (RMSE statistics)
         rmse_stats = get_rmse_stats(models)
         mean_rmse_arr[epoch] = rmse_stats['mean_rmse']
@@ -1286,8 +1314,8 @@ def evolution(num_of_epochs, models, training_data):
                 print("min_loss < 0.0001")
                 print(f"Current best RMSE: {best_rmse:.6f}")
                 print(f"Number of unique expressions: {len(unique_expressions)}")
-                for model in selected_models[:5]:
-                    print(model.to_math_expr(), end="\n")
+                for model in models[:5]:
+                    print(model.to_math_expr(), "depth:", model.depth, end="\n")
                 # quit()
 
         # Print best model and its expression every 10 epochs
@@ -1296,8 +1324,8 @@ def evolution(num_of_epochs, models, training_data):
             print(f"Current mean RMSE: {rmse_stats['mean_rmse']:.6f}")
             print(f"Current median RMSE: {rmse_stats['median_rmse']:.6f}")
             print(f"Number of unique expressions: {len(unique_expressions)}")
-            for model in selected_models[:5]:
-                print(model.to_math_expr(), end="\n")
+            for model in models[:5]:
+                print(model.to_math_expr(), "depth:", model.depth, end="\n")
 
     # Store results
     best_model.error_history = mean_rmse_arr
@@ -1316,14 +1344,14 @@ def evolution(num_of_epochs, models, training_data):
     print(f"Total number of unique expressions found: {len(unique_expressions)}")
 
     # return best model
-    print("selected_models:", [model.to_math_expr() for model in selected_models])
+    print("selected_models:", [model.to_math_expr() for model in models])
     print("\n")
-    print("sorted_selected_models:", [model.to_math_expr() for model in sorted(selected_models, key=lambda x: x.error)])
-    for i, model in enumerate(sorted(selected_models, key=lambda x: x.error)):
+    print("sorted_selected_models:", [model.to_math_expr() for model in sorted(models, key=lambda x: x.error)])
+    for i, model in enumerate(sorted(models, key=lambda x: x.error)):
         print(f"{i}: {model.to_math_expr()}")
         print(f"   RMSE: {model.error:.6f}")
         print(f"   forward_loss: {model.forward_loss:.6f}")
         print(f"   inv_loss: {getattr(model, 'inv_loss', 0):.6f}")
         print(f"   domain_loss: {model.domain_loss:.6f}")
         print(f"   complexity: {model.max_num_of_node}")
-    return sorted(selected_models, key=lambda x: x.error)[0]
+    return models[0]

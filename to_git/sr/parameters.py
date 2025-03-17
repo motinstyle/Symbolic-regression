@@ -42,7 +42,7 @@ MUTATION_PROB = 0.25
 INV_ERROR_COEF = 0.7
 
 # max depth of a tree
-MAX_DEPTH = 5
+MAX_DEPTH = 10
 
 # fixed seed
 FIXED_SEED = 3 # 3
