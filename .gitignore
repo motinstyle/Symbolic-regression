@@ -1,3 +1,8 @@
 not_git/
 error_check.py
 grad_check.py
+depth_check.py
+igor.py
+to_git/datasets/buy.csv
+to_git/datasets/new_buy.csv
+

@@ -96,6 +96,10 @@ def pow3_(x):
     """Vectorized power with handling of negative powers"""
     return torch.clamp(x**3, -MAX_VALUE, MAX_VALUE)
 
+def abs_(x):
+    """Vectorized absolute value"""
+    return torch.abs(x)
+
 def log_(x):
     """Vectorized natural logarithm with handling of negative/zero inputs"""
     safe_x = x + EPSILON
@@ -209,6 +213,15 @@ FUNCTIONS = {
         category=FunctionCategory.EXPONENTIAL,
         display_name='^3',
         description="Power function"
+    ),
+    'abs_': FunctionInfo(
+        name='abs_',
+        func=abs_,
+        parity=1,
+        category=FunctionCategory.ARITHMETIC,
+        display_name='abs',
+        range_min=0,
+        description="Absolute value function"
     ),
     'log_': FunctionInfo(
         name='log_',

@@ -9,13 +9,16 @@ REQUIRES_GRAD = False
 INV_ERROR_EVAL_FREQ = 5 
 
 # requires constants
-REQUIRES_CONST = False
+CONST_OPT = False
+
+# allow constants in the initial population
+ALLOW_CONSTANTS = True
 
 # constant mutation probability
 CONST_MUTATION_PROB = 0.25
 
 # initial population size
-NUM_OF_START_MODELS = 100
+NUM_OF_START_MODELS = 1000
 
 # depth of initial models (in create_diverse_population)
 DEPTH_OF_START_MODELS = 5
@@ -31,6 +34,9 @@ SELECTION_METHOD = "NSGA-II" # "top_k"
 
 # number of epochs
 NUM_OF_EPOCHS = 100
+
+# probability of variables will be generated instead of constants
+VARIABLES_OR_CONSTANTS_PROB = 0.5
 
 # frequency of constant optimization
 CONST_OPT_FREQUENCY = 10

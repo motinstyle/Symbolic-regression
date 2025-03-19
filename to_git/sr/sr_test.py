@@ -69,8 +69,8 @@ def create_start_nodes(data: pd.DataFrame, requires_grad: bool = False) -> List[
                                                 [get_deepcopy(vars[i]), get_deepcopy(vars[j])],
                                                 requires_grad=requires_grad))
                             
-                    # Add some combinations with random constants if REQUIRES_CONST is False
-                    if not REQUIRES_CONST:
+                    # Add some combinations with random constants if CONST_OPT is False
+                    if not CONST_OPT:
                         for var in vars:
                             # Create random constant node
                             const_val = np.random.uniform(-10, 10)
@@ -105,7 +105,8 @@ def build_random_tree(
     max_depth: int,
     all_functions: List[FunctionInfo],
     requires_grad: bool = False,
-    allow_constants: bool = False
+    allow_constants: bool = ALLOW_CONSTANTS,
+    current_depth: int = 0
 ) -> Node:
     """
     Recursively builds a random tree up to max_depth.
@@ -118,23 +119,31 @@ def build_random_tree(
         all_functions: List of available functions
         requires_grad: Whether to enable gradient computation
         allow_constants: Whether to allow creation of constant nodes
+        current_depth: Current depth in the recursion
     """
     # Higher probability to stop at lower depths for shorter trees
-    if max_depth <= 0 or np.random.rand() < 0.2:
-        # When REQUIRES_CONST is True or constants are not allowed, only create variable nodes
-        if REQUIRES_CONST or not allow_constants:
+    remaining_depth = max_depth - current_depth
+    if remaining_depth <= 0 or np.random.rand() < 0.2:
+        # When CONST_OPT is True or constants are not allowed, only create variable nodes
+        if CONST_OPT or not allow_constants:
             var_idx = np.random.randint(0, num_vars)
-            return safe_deepcopy(Node("var", 1, FUNCTIONS['ident_'].func, [var_idx], requires_grad=requires_grad))
+            node = safe_deepcopy(Node("var", 1, FUNCTIONS['ident_'].func, [var_idx], requires_grad=requires_grad))
+            node.var_count = 1  # Variable node has var_count of 1
+            return node
         else:
             # Choose between variable and constant when constants are allowed
-            if np.random.rand() < 0.7:  # Bias towards variables
+            if np.random.rand() < VARIABLES_OR_CONSTANTS_PROB:  # Bias towards variables
                 var_idx = np.random.randint(0, num_vars)
-                return safe_deepcopy(Node("var", 1, FUNCTIONS['ident_'].func, [var_idx], requires_grad=requires_grad))
+                node = safe_deepcopy(Node("var", 1, FUNCTIONS['ident_'].func, [var_idx], requires_grad=requires_grad))
+                node.var_count = 1  # Variable node has var_count of 1
+                return node
             else:
                 # Constant node
                 c_val = np.random.uniform(-10, 10)
                 c_tensor = torch.tensor([float(c_val)], dtype=torch.float32)
-                return safe_deepcopy(Node("ident", 1, FUNCTIONS['const_'].func, c_tensor, requires_grad=False))
+                node = safe_deepcopy(Node("ident", 1, FUNCTIONS['const_'].func, c_tensor, requires_grad=False))
+                node.var_count = 0  # Constant node has var_count of 0
+                return node
     
     # Build function node
     func_info = np.random.choice(all_functions)
@@ -144,13 +153,17 @@ def build_random_tree(
     
     if func_info.parity == 1:
         # Unary function
-        child = build_random_tree(num_vars, max_depth - 1, all_functions, requires_grad, allow_constants)
-        return safe_deepcopy(Node("func", 1, func_info.func, [child], requires_grad=requires_grad))
+        child = build_random_tree(num_vars, max_depth, all_functions, requires_grad, allow_constants, current_depth + 1)
+        node = safe_deepcopy(Node("func", 1, func_info.func, [child], requires_grad=requires_grad))
+        node.var_count = child.var_count  # Unary function inherits child's var_count
+        return node
     else:
         # Binary function
-        left = build_random_tree(num_vars, max_depth - 1, all_functions, requires_grad, allow_constants)
-        right = build_random_tree(num_vars, max_depth - 1, all_functions, requires_grad, allow_constants)
-        return safe_deepcopy(Node("func", 2, func_info.func, [left, right], requires_grad=requires_grad))
+        left = build_random_tree(num_vars, max_depth, all_functions, requires_grad, allow_constants, current_depth + 1)
+        right = build_random_tree(num_vars, max_depth, all_functions, requires_grad, allow_constants, current_depth + 1)
+        node = safe_deepcopy(Node("func", 2, func_info.func, [left, right], requires_grad=requires_grad))
+        node.var_count = left.var_count + right.var_count  # Binary function sums children's var_counts
+        return node
 
 
 # create diverse population of trees
@@ -178,46 +191,57 @@ def create_diverse_population(
     for func_info in all_funcs:
         if func_info.parity == 1:
             # Unary function
-            child_node = build_random_tree(num_vars, max_depth - 1, all_funcs, requires_grad, allow_constants=False)
+            child_node = build_random_tree(num_vars, max_depth - 1, all_funcs, requires_grad, allow_constants=ALLOW_CONSTANTS)
             root_node = Node("func", 1, func_info.func, [child_node], requires_grad=requires_grad)
+            root_node.var_count = child_node.var_count  # Set var_count based on child
         else:
             # Binary function
-            left_node = build_random_tree(num_vars, max_depth - 1, all_funcs, requires_grad, allow_constants=False)
-            right_node = build_random_tree(num_vars, max_depth - 1, all_funcs, requires_grad, allow_constants=False)
+            left_node = build_random_tree(num_vars, max_depth - 1, all_funcs, requires_grad, allow_constants=ALLOW_CONSTANTS)
+            right_node = build_random_tree(num_vars, max_depth - 1, all_funcs, requires_grad, allow_constants=ALLOW_CONSTANTS)
             root_node = Node("func", 2, func_info.func, [left_node, right_node], requires_grad=requires_grad)
+            root_node.var_count = left_node.var_count + right_node.var_count  # Sum var_counts of children
         
         tree = Tree(root_node, requires_grad=requires_grad)
         tree.num_vars = num_vars
+        tree.update_var_counts()  # Update variable counts
+        tree.update_depth()       # Update tree depth
         population.append(safe_deepcopy(tree))
         pop_set.add(tree.to_math_expr())
     
-    # 2) Create one tree with a constant node if REQUIRES_CONST is False
-    if not REQUIRES_CONST:
+    # 2) Create one tree with a constant node if CONST_OPT is False
+    if not CONST_OPT:
         # Create a binary function with one constant child
         func_info = np.random.choice([f for f in all_funcs if f.parity == 2])  # Choose a binary function
-        var_node = build_random_tree(num_vars, 1, all_funcs, requires_grad, allow_constants=False)  # Create a simple variable node
+        var_node = build_random_tree(num_vars, 1, all_funcs, requires_grad, allow_constants=ALLOW_CONSTANTS)  # Create a simple variable node
         const_val = np.random.uniform(-10, 10)
         const_node = Node("ident", 1, FUNCTIONS['const_'].func,
                        torch.tensor([float(const_val)], dtype=torch.float32),
                        requires_grad=False)
+        const_node.var_count = 0  # Constant has var_count of 0
         
         # Randomly decide if constant should be left or right child
         if np.random.rand() < 0.5:
             root_node = Node("func", 2, func_info.func, [var_node, const_node], requires_grad=requires_grad)
+            root_node.var_count = var_node.var_count  # Only var_node contributes to var_count
         else:
             root_node = Node("func", 2, func_info.func, [const_node, var_node], requires_grad=requires_grad)
+            root_node.var_count = var_node.var_count  # Only var_node contributes to var_count
         
         tree = Tree(root_node, requires_grad=requires_grad)
         tree.num_vars = num_vars
+        tree.update_var_counts()  # Update variable counts
+        tree.update_depth()       # Update tree depth
         if tree.to_math_expr() not in pop_set:
             population.append(safe_deepcopy(tree))
             pop_set.add(tree.to_math_expr())
     
     # 3) Fill remaining population with random trees (without constants)
     while len(population) < population_size:
-        node = build_random_tree(num_vars, max_depth, all_funcs, requires_grad, allow_constants=False)
+        node = build_random_tree(num_vars, max_depth, all_funcs, requires_grad, allow_constants=ALLOW_CONSTANTS)
         tree = Tree(node, requires_grad=requires_grad)
         tree.num_vars = num_vars
+        tree.update_var_counts()  # Update variable counts
+        tree.update_depth()       # Update tree depth
         if tree.to_math_expr() not in pop_set:
             population.append(safe_deepcopy(tree))
             pop_set.add(tree.to_math_expr())
@@ -388,6 +412,8 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     print(final_model.print_tree())
     print("\nMathematical Expression:")
     print(final_model.to_math_expr())
+    from simplifying import simplify_expression
+    print("Simplified Expression:", simplify_expression(final_model.to_math_expr()))
     
     if requires_grad:
         print("\nGradients:")
@@ -413,10 +439,12 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
 if __name__ == "__main__":
     # Example usage with single variable
     print("Single variable example:")
-    X_data = np.linspace(-10, 10, 1000)  # Reshape to (100, 1)
+    X_data = np.linspace(-30, 30, 1000)  # Reshape to (100, 1)
     # X_data = np.linspace(-10, 10, 100)
-    Y_data = X_data**5  # Example target function: x^2
-    # Y_data = np.e ** (-1*(X_data+4)**2)/2  # Example target function: x^2
+    # Y_data = X_data**5  # Example target function: x^2
+    # Y_data = np.exp(-1*(X_data-4)**2)  # Example target function: x^2
+    Y_data = np.e ** (-1*(X_data)**2)  # Example target function: x^2
+    # Y_data = 2*np.sin(0.5*X_data) + 5*np.cos(2*X_data)  # Example target function: x^2
     # Y_data = np.power(X_data.flatten(), 2)  # Example target function: x^5
     # # Y_data = 5*np.ones(100)  # Example target function: x^5
     # # Y_data = 1/(X_data) # Example target function: x^5
@@ -468,3 +496,4 @@ if __name__ == "__main__":
     #     run_evolution(data.iloc[:, :-1].values, data.iloc[:, -1].values, 
     #                  requires_grad=REQUIRES_GRAD, target_func=func_name)
 
+    

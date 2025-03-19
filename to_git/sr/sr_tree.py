@@ -26,13 +26,14 @@ class Node:
         self.requires_grad = requires_grad
         self._cached_output = None  # Cache for forward pass
         self._cached_grad = None    # Cache for backward pass
+        self.var_count = 0      # Counter for variables under this node
         self.domain_penalty = 0
         
         # Get function info if available
         self.func_info = get_function_info(func.__name__) if hasattr(func, '__name__') else None
 
         # Initialize constants if required
-        if REQUIRES_CONST:
+        if CONST_OPT:
             # Don't add constants for basic operators and const nodes
             if (self.func_info and self.func_info.name not in ['add_', 'sub_', 'mul_', 'div_']):
                 # Random initialization of constants in range [-10, 10]
@@ -92,7 +93,7 @@ class Node:
                 result = self.func(left_result, right_result)
 
         # Apply constants if required
-        if REQUIRES_CONST and isinstance(self.scale, torch.Tensor):
+        if CONST_OPT and isinstance(self.scale, torch.Tensor):
             result = self.scale * result + self.bias
 
         if cache:
@@ -166,7 +167,7 @@ class Node:
                     expr = f"{self.func.__name__}({left_expr}, {right_expr})"
 
         # Add constants if required and they exist
-        if REQUIRES_CONST:
+        if CONST_OPT:
             scale = self.scale.item()
             bias = self.bias.item()
             if scale != 1 or bias != 0:
@@ -181,7 +182,7 @@ class Node:
     def get_constants(self):
         """Get all constants in the node and its children"""
         constants = []
-        if REQUIRES_CONST and isinstance(self.scale, torch.Tensor):
+        if CONST_OPT and isinstance(self.scale, torch.Tensor):
             constants.extend([self.scale, self.bias])
         
         if self.t_name == "func":
@@ -193,7 +194,7 @@ class Node:
     # simplify the expression by combining constants where possible
     def simplify(self):
         """Simplify the expression by combining constants where possible"""
-        if not REQUIRES_CONST:
+        if not CONST_OPT:
             return
             
         if self.t_name == "func" and self.func_info:
@@ -239,6 +240,7 @@ class Tree:
         self.requires_grad = requires_grad
         self._set_requires_grad(requires_grad)
         self.enumerate_tree()
+        self.update_var_counts()  # Count variables under each node
         self.depth = self.get_tree_depth(self.start_node)  # Store current depth
 
         # NSGA-II
@@ -263,18 +265,28 @@ class Tree:
     # string representation of the tree (start node, max number of nodes, error)
     def __str__(self):
         return f"start: ({self.start_node}), max_node_num: {self.max_num_of_node}, depth: {self.depth}, error: {self.error}"
-    
+
     def __repr__(self):
         return self.__str__()
 
     # calculate depth of tree/subtree starting at node
     def get_tree_depth(self, node: Node) -> int:
-        """Calculate the depth of the tree starting from the given node"""
+        """
+        Calculate the depth of the tree starting from the given node,
+        treating nodes with zero variables as leaf nodes regardless of structure.
+        """
         if node is None:
             return 0
+        
+        # Variable nodes are leaf nodes
         if node.t_name == "var" or (node.t_name == "ident" and not isinstance(node.data, list)):
             return 0
+            
+        # If this node has zero variables under it, treat it as a leaf node
+        if node.var_count == 0:
+            return 0
         
+        # For other nodes, get the maximum depth from children
         max_child_depth = 0
         if isinstance(node.data, list):
             for child in node.data:
@@ -283,8 +295,32 @@ class Tree:
         
         return max_child_depth + 1
 
+    def update_var_counts(self):
+        """Update the variable counts for all nodes in the tree"""
+        def count_vars(node):
+            if node is None:
+                return 0
+            
+            # Reset the counter for this node
+            node.var_count = 0
+            
+            # If it's a variable node, count as 1
+            if node.t_name == "var":
+                node.var_count = 1
+                return 1
+                
+            # For other nodes, sum up from children
+            if isinstance(node.data, list):
+                for child in node.data:
+                    node.var_count += count_vars(child)
+            
+            return node.var_count
+            
+        count_vars(self.start_node)
+
     def update_depth(self):
         """Update the current depth of the tree"""
+        self.update_var_counts()  # First update variable counts
         self.depth = self.get_tree_depth(self.start_node)
 
     def validate_tree_depth(self) -> bool:
@@ -345,22 +381,26 @@ class Tree:
 
     # change node with old_node_num to new_node
     def change_node(self, old_node_num, new_node):
-        to_check = [self.start_node]
-        while len(to_check) > 0:
-            for el in to_check:
-                if el.node_num == old_node_num:
-                    el.t_name = new_node.t_name
-                    el.parity = new_node.parity
-                    el.func = new_node.func
-                    el.data = new_node.data
-                    el.node_num = -1
-                    self.enumerate_tree()
-                    self.update_depth()
-                    return 
-                if el.t_name not in ("var", "ident"):
-                    for d in el.data:
-                        to_check.append(d)
-                to_check.pop(to_check.index(el))
+        """Change a node in the tree and update tree properties"""
+        nodes = []
+        def find_and_replace(node):
+            # Проверяем, является ли node объектом класса Node
+            if not isinstance(node, Node):
+                return node  # Если нет, просто возвращаем его без изменений
+            
+            if node.node_num == old_node_num:
+                return new_node
+            if isinstance(node.data, list):
+                new_children = []
+                for child in node.data:
+                    new_children.append(find_and_replace(child))
+                node.data = new_children
+            return node
+
+        self.start_node = find_and_replace(self.start_node)
+        self.enumerate_tree()
+        self.update_var_counts()  # Update var counts after node change
+        self.update_depth()  # Update depth after node change
 
     # forward pass with gradients if gradient is required (for inverse pass)
     def forward_with_gradients(self, varval: torch.Tensor, cache: bool = True):
@@ -396,10 +436,10 @@ class Tree:
             return self.forward_with_gradients(varval=varval, cache=cache)
         return self.start_node.eval_node(varval=varval, cache=cache)
 
-    # optimize constants in the tree using Nelder-Mead method if REQUIRES_CONST is True
+    # optimize constants in the tree using Nelder-Mead method if CONST_OPT is True
     def optimize_constants(self, data: Union[np.ndarray, torch.Tensor], max_iter: int = 500) -> None:
         """Optimize constants in the tree using Nelder-Mead method"""
-        if not REQUIRES_CONST:
+        if not CONST_OPT:
             return
 
         # Convert data to numpy if it's a tensor
@@ -421,7 +461,7 @@ class Tree:
             param_idx = 0
             def update_constants(node):
                 nonlocal param_idx
-                if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
+                if CONST_OPT and isinstance(node.scale, torch.Tensor):
                     node.scale = torch.tensor([params[param_idx]], dtype=torch.float32)
                     param_idx += 1
                     node.bias = torch.tensor([params[param_idx]], dtype=torch.float32)
@@ -452,7 +492,7 @@ class Tree:
         param_idx = 0
         def update_final_constants(node):
             nonlocal param_idx
-            if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
+            if CONST_OPT and isinstance(node.scale, torch.Tensor):
                 node.scale = torch.tensor([final_params[param_idx]], dtype=torch.float32)
                 param_idx += 1
                 node.bias = torch.tensor([final_params[param_idx]], dtype=torch.float32)
@@ -700,7 +740,7 @@ class Tree:
                     expr = f"{func_name}({left}, {right})"
                 
             # Add constants if required and they exist
-            if REQUIRES_CONST and isinstance(node.scale, torch.Tensor):
+            if CONST_OPT and isinstance(node.scale, torch.Tensor):
                 scale = node.scale.item()
                 bias = node.bias.item()
                 if scale != 1 or bias != 0:
@@ -899,14 +939,10 @@ def compute_domination(models: List[Tree]):
     for i in range(n):
         for j in range(i+1, n):
             if models[i].to_math_expr() == models[j].to_math_expr() or \
-                (models[i].forward_loss == models[j].forward_loss and \
+                (np.isclose(models[i].forward_loss, models[j].forward_loss, atol=1e-1) and \
                 #  models[i].max_num_of_node == models[j].max_num_of_node and \
                  models[i].depth == models[j].depth and \
-                 models[i].domain_loss == models[j].domain_loss):# or \
-                # (np.allclose(models[i].forward_loss, models[j].forward_loss, atol=1e-1) and \
-                # #  models[i].max_num_of_node == models[j].max_num_of_node and \
-                #  models[i].depth == models[j].depth and \
-                #  np.allclose(models[i].domain_loss, models[j].domain_loss, atol=1e-1)):
+                 np.isclose(models[i].domain_loss, models[j].domain_loss, atol=1e-1)):
                 models[j].is_unique = False
 
     # Step 2: Compute domination only among unique models
@@ -1081,7 +1117,7 @@ def model_selection(models: List[Tree], params: Optional[Dict] = None) -> List[T
 # optimize constants for a population of trees
 def optimize_population_constants(models: List[Tree], training_data: Union[np.ndarray, torch.Tensor], max_iter: int = 50) -> None:
     """Optimize constants for a population of trees"""
-    if not REQUIRES_CONST:
+    if not CONST_OPT:
         return
     
     print("Optimizing constants for population...")
@@ -1120,7 +1156,7 @@ def tournament(model1: Tree, model2: Tree):
     
     
 
-# evolution process with crossover, mutation, and constant optimization(if REQUIRES_CONST is True)
+# evolution process with crossover, mutation, and constant optimization(if CONST_OPT is True)
 def evolution(num_of_epochs, models, training_data):
     """evolution process with crossover, mutation, and constant optimization"""
     
@@ -1220,10 +1256,10 @@ def evolution(num_of_epochs, models, training_data):
             # mutate from best models
             new_models = []
             for model in models_to_eval:
-                # Try up to 10 times to get a unique expression through mutation
+            # Try up to 10 times to get a unique expression through mutation
                 for _ in range(10):
                     mutated_model = mutation(model)
-                    if not REQUIRES_CONST and np.random.uniform() < CONST_MUTATION_PROB:
+                    if not CONST_OPT and np.random.uniform() < CONST_MUTATION_PROB:
                         mutated_model = mutation_constant(mutated_model)
                     expr = mutated_model.to_math_expr()
                     if expr not in unique_expressions:
@@ -1274,7 +1310,7 @@ def evolution(num_of_epochs, models, training_data):
 
 
         # Optimize constants periodically if enabled
-        if REQUIRES_CONST and epoch % CONST_OPT_FREQUENCY == 0:
+        if CONST_OPT and epoch % CONST_OPT_FREQUENCY == 0:
             optimize_population_constants(models_to_eval, training_data, max_iter=50)
 
         # Evaluate models (choose variant of evaluation based on requires_grad)
