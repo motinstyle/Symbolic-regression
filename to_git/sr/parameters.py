@@ -5,6 +5,12 @@ SAVE_RESULTS = False
 # requires gradient (also for enabling usage of inverse error)
 REQUIRES_GRAD = False
 
+# number of points for constant node check
+NUM_OF_POINTS_FOR_CONST_NODE_CHECK = 1000
+
+# constant node check magnitude
+CONST_NODE_CHECK_MAGNITUDE = 30
+
 # inv error evaluation frequency
 INV_ERROR_EVAL_FREQ = 5 
 
@@ -18,13 +24,13 @@ ALLOW_CONSTANTS = True
 CONST_MUTATION_PROB = 0.25
 
 # initial population size
-NUM_OF_START_MODELS = 1000
+NUM_OF_START_MODELS = 1000 #1000
 
 # depth of initial models (in create_diverse_population)
 DEPTH_OF_START_MODELS = 5
 
 # population size
-POPULATION_SIZE = 100
+POPULATION_SIZE = 100 #100
 
 # number of models to select from the population
 NUM_OF_MODELS_TO_SELECT = 10
@@ -51,7 +57,7 @@ INV_ERROR_COEF = 0.7
 MAX_DEPTH = 10
 
 # fixed seed
-FIXED_SEED = 3 # 3
+FIXED_SEED = 4 # 3
 if FIXED_SEED is not None:
     import numpy as np
     import torch

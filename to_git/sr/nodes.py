@@ -43,6 +43,10 @@ def ident_(x):
         x = torch.tensor(x, dtype=torch.float32)
     return x
 
+def neg_(x):
+    """Vectorized negation with value capping"""
+    return torch.clamp(-x, -MAX_VALUE, MAX_VALUE)
+
 def sum_(x, y):
     """Vectorized addition with value capping"""
     result = x + y
@@ -138,6 +142,14 @@ FUNCTIONS = {
         category=FunctionCategory.IDENTITY,
         display_name='x',
         description="Identity function"
+    ),
+    'neg_': FunctionInfo(
+        name='neg_',
+        func=neg_,
+        parity=1,
+        category=FunctionCategory.ARITHMETIC,
+        display_name='-',
+        description="Negation of a number"
     ),
     'sum_': FunctionInfo(
         name='sum_',

@@ -206,7 +206,7 @@ def create_diverse_population(
         tree.update_var_counts()  # Update variable counts
         tree.update_depth()       # Update tree depth
         population.append(safe_deepcopy(tree))
-        pop_set.add(tree.to_math_expr())
+        pop_set.add(tree.math_expr)
     
     # 2) Create one tree with a constant node if CONST_OPT is False
     if not CONST_OPT:
@@ -231,9 +231,9 @@ def create_diverse_population(
         tree.num_vars = num_vars
         tree.update_var_counts()  # Update variable counts
         tree.update_depth()       # Update tree depth
-        if tree.to_math_expr() not in pop_set:
+        if tree.math_expr not in pop_set:
             population.append(safe_deepcopy(tree))
-            pop_set.add(tree.to_math_expr())
+            pop_set.add(tree.math_expr)
     
     # 3) Fill remaining population with random trees (without constants)
     while len(population) < population_size:
@@ -242,9 +242,9 @@ def create_diverse_population(
         tree.num_vars = num_vars
         tree.update_var_counts()  # Update variable counts
         tree.update_depth()       # Update tree depth
-        if tree.to_math_expr() not in pop_set:
+        if tree.math_expr not in pop_set:
             population.append(safe_deepcopy(tree))
-            pop_set.add(tree.to_math_expr())
+            pop_set.add(tree.math_expr)
     
     return population
 
@@ -282,7 +282,7 @@ def save_model_results(model: Tree, X_data: np.ndarray, Y_data: np.ndarray, Y_pr
         
         f.write("Mathematical Expression:\n")
         f.write("-" * 30 + "\n")
-        f.write(f"{model.to_math_expr()}\n\n")
+        f.write(f"{model.math_expr}\n\n")
         
         if target_func:
             f.write("Target Function:\n")
@@ -403,17 +403,17 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     # Plot results
     if X_plot.shape[1] == 1:
         X_plot = X_plot.flatten()  # Flatten for 1D plotting
-        plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.to_math_expr()}")
+        plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}")
     elif X_plot.shape[1] == 2:
-        plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.to_math_expr()}")
+        plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}")
     
     # Print the final model
     print("\nFinal Model:")
     print(final_model.print_tree())
     print("\nMathematical Expression:")
-    print(final_model.to_math_expr())
+    print(final_model.math_expr)
     from simplifying import simplify_expression
-    print("Simplified Expression:", simplify_expression(final_model.to_math_expr()))
+    print("Simplified Expression:", simplify_expression(final_model.math_expr))
     
     if requires_grad:
         print("\nGradients:")
@@ -443,7 +443,7 @@ if __name__ == "__main__":
     # X_data = np.linspace(-10, 10, 100)
     # Y_data = X_data**5  # Example target function: x^2
     # Y_data = np.exp(-1*(X_data-4)**2)  # Example target function: x^2
-    Y_data = np.e ** (-1*(X_data)**2)  # Example target function: x^2
+    Y_data = np.e ** (-1*(X_data)**2)  # Example target function: e^(-x^2)
     # Y_data = 2*np.sin(0.5*X_data) + 5*np.cos(2*X_data)  # Example target function: x^2
     # Y_data = np.power(X_data.flatten(), 2)  # Example target function: x^5
     # # Y_data = 5*np.ones(100)  # Example target function: x^5
@@ -452,19 +452,19 @@ if __name__ == "__main__":
     if not FIXED_SEED:
         models = []
         for i in range(10):
-            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^5")
+            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="e^(-x^2)")
             models.append(model)
         for model in models:
-            print(model.to_math_expr())
+            print(model.math_expr)
             print(model.error)
             print(model.forward_loss)
         best_model = min(models, key=lambda x: x.error)
         print("Best model:")
-        print(best_model.to_math_expr())
+        print(best_model.math_expr)
         print(best_model.error)
         print(best_model.forward_loss)
     else:
-        model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x^5")
+        model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="e^(-x^2)")
     
     # Example usage with multiple variables
     # print("\nMultiple variables example:")
@@ -477,19 +477,19 @@ if __name__ == "__main__":
     #         model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x0^2 + x1^2")
     #         models.append(model)
     #     for model in models:
-    #         print(model.to_math_expr())
+    #         print(model.math_expr)
     #         print(model.error)
     #         print(model.forward_loss)
     #     best_model = min(models, key=lambda x: x.error)
     #     print("Best model:")
-    #     print(best_model.to_math_expr())
+    #     print(best_model.math_expr)
     #     print(best_model.error)
     #     print(best_model.forward_loss)    
     # else:
     #     model2 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x0^2 + x1^2")
     #     print(model2)
 
-    # # # Load and process dataset examples
+    # # Load and process dataset examples
     # data_list = load_data()
     # for func_name, data in data_list:
     #     print(f"\nProcessing function: {func_name}")
