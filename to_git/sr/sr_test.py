@@ -2,17 +2,139 @@ import pandas as pd
 import os
 import numpy as np
 import torch
-from typing import List, Tuple, Optional, Union, Dict
+from typing import List, Tuple, Optional, Union, Dict, Callable
+import time
 
 from nodes import FUNCTIONS, FunctionCategory, get_functions_by_category, get_functions_by_parity, to_tensor
 from visual import plot_results
 from sr_tree import *
 from parameters import *
 
+# Define a class to hold population statistics
+class PopulationStats:
+    def __init__(self):
+        # Initialize dictionaries to store statistics
+        self.function_counts = {}
+        self.var_count = 0
+        self.const_count = 0
+        self.total_leaf_nodes = 0
+    
+    def get_var_const_ratio(self):
+        """Get the ratio of variables to all leaf nodes."""
+        if self.total_leaf_nodes == 0:
+            return 0
+        return self.var_count / self.total_leaf_nodes
+    
+    def get_const_ratio(self):
+        """Get the ratio of constants to all leaf nodes."""
+        if self.total_leaf_nodes == 0:
+            return 0
+        return self.const_count / self.total_leaf_nodes
+    
+    def display_stats(self):
+        """Display all collected statistics."""
+        print("\n" + "="*50)
+        print("POPULATION STATISTICS")
+        print("="*50)
+        
+        # Print function usage table
+        print("\nFunction Usage:")
+        print("-"*40)
+        print(f"{'Function':<15} {'Count':<10} {'Percentage':<15}")
+        print("-"*40)
+        
+        total_funcs = sum(self.function_counts.values())
+        for func_name, count in sorted(self.function_counts.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / total_funcs * 100) if total_funcs > 0 else 0
+            print(f"{func_name:<15} {count:<10} {percentage:.2f}%")
+        
+        # Print leaf node statistics
+        print("\nLeaf Node Statistics:")
+        print("-"*40)
+        print(f"Total leaf nodes: {self.total_leaf_nodes}")
+        print(f"Variables: {self.var_count} ({self.get_var_const_ratio()*100:.2f}%)")
+        print(f"Constants: {self.const_count} ({self.get_const_ratio()*100:.2f}%)")
+        
+        # Plot statistics
+        self.plot_stats()
+    
+    def plot_stats(self):
+        """Plot statistics as histograms and pie charts."""
+        # Create a figure with 2 subplots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Plot function usage histogram
+        if self.function_counts:
+            func_names = list(self.function_counts.keys())
+            counts = list(self.function_counts.values())
+            
+            # Sort by count
+            sorted_indices = np.argsort(counts)[::-1]
+            func_names = [func_names[i] for i in sorted_indices]
+            counts = [counts[i] for i in sorted_indices]
+            
+            ax1.bar(range(len(func_names)), counts, tick_label=func_names)
+            ax1.set_title('Function Usage in Population')
+            ax1.set_xlabel('Function')
+            ax1.set_ylabel('Count')
+            ax1.tick_params(axis='x', rotation=45)
+            
+            # Add count values on top of bars
+            for i, v in enumerate(counts):
+                ax1.text(i, v + 0.5, str(v), ha='center')
+        
+        # Plot leaf node distribution pie chart
+        if self.total_leaf_nodes > 0:
+            ax2.pie([self.var_count, self.const_count], 
+                   labels=['Variables', 'Constants'],
+                   autopct='%1.1f%%',
+                   startangle=90,
+                   colors=['#66b3ff', '#ff9999'])
+            ax2.set_title('Leaf Node Distribution')
+        
+        plt.tight_layout()
+        plt.show()
+
+# Add a function to collect node statistics
+def collect_node_stats(node: Node, stats: PopulationStats):
+    """
+    Recursively collect statistics about nodes in the tree.
+    
+    Args:
+        node: The node to analyze
+        stats: The PopulationStats object to update
+    """
+    if node is None:
+        return
+    
+    # Count function usage
+    if node.t_name == "func":
+        func_name = node.func.__name__
+        if func_name in stats.function_counts:
+            stats.function_counts[func_name] += 1
+        else:
+            stats.function_counts[func_name] = 1
+        
+        # Recursively process children
+        if isinstance(node.data, list):
+            for child in node.data:
+                collect_node_stats(child, stats)
+    
+    # Count leaf nodes (variables and constants)
+    elif node.t_name == "var":
+        stats.var_count += 1
+        stats.total_leaf_nodes += 1
+    
+    elif node.t_name == "ident":
+        stats.const_count += 1
+        stats.total_leaf_nodes += 1
+
 # load data from csv files for specified function or all functions
 def load_data(func_name: Optional[str] = None) -> List[Tuple[str, pd.DataFrame]]:
     """Load data from CSV files for specified function or all functions"""
-    data_folder = "../datasets"
+    # data_folder = "../datasets"
+    data_folder = "../new_datasets"
+    # data_folder = "../dataset_bodya"
 
     test_func = [func for func in os.listdir(data_folder) if func.endswith(".csv")]
     test_func = [func.replace(".csv", "") for func in test_func]
@@ -138,7 +260,7 @@ def build_random_tree(
                 node.var_count = 1  # Variable node has var_count of 1
                 return node
             else:
-                # Constant node
+            # Constant node
                 c_val = np.random.uniform(-10, 10)
                 c_tensor = torch.tensor([float(c_val)], dtype=torch.float32)
                 node = safe_deepcopy(Node("ident", 1, FUNCTIONS['const_'].func, c_tensor, requires_grad=False))
@@ -172,12 +294,17 @@ def create_diverse_population(
     population_size: int = 50,
     max_depth: int = 3,
     requires_grad: bool = False
-) -> List[Tree]:
+) -> Tuple[List[Tree], PopulationStats]:
     """
-    Generates a list of 'population_size' trees:
+    Generates a list of 'population_size' trees and collects statistics:
     1. Guarantees each function appears at least once as a root
     2. Creates one tree with a constant node
     3. Fills remaining population with random trees (without constants)
+    
+    Returns:
+        Tuple containing:
+        - List of Tree objects (the population)
+        - PopulationStats object with usage statistics
     """
     num_vars = data.shape[1] - 1
     # Collect all functions except const_ and ident_
@@ -186,7 +313,10 @@ def create_diverse_population(
     
     population = []
     pop_set = set()
-
+    
+    # Initialize statistics object
+    stats = PopulationStats()
+    
     # 1) Guarantee each function appears at least once as root
     for func_info in all_funcs:
         if func_info.parity == 1:
@@ -205,6 +335,10 @@ def create_diverse_population(
         tree.num_vars = num_vars
         tree.update_var_counts()  # Update variable counts
         tree.update_depth()       # Update tree depth
+        
+        # Collect statistics for this tree
+        collect_node_stats(tree.start_node, stats)
+        
         population.append(safe_deepcopy(tree))
         pop_set.add(tree.math_expr)
     
@@ -231,7 +365,11 @@ def create_diverse_population(
         tree.num_vars = num_vars
         tree.update_var_counts()  # Update variable counts
         tree.update_depth()       # Update tree depth
+        
         if tree.math_expr not in pop_set:
+            # Collect statistics for this tree
+            collect_node_stats(tree.start_node, stats)
+            
             population.append(safe_deepcopy(tree))
             pop_set.add(tree.math_expr)
     
@@ -242,11 +380,18 @@ def create_diverse_population(
         tree.num_vars = num_vars
         tree.update_var_counts()  # Update variable counts
         tree.update_depth()       # Update tree depth
+        
         if tree.math_expr not in pop_set:
+            # Collect statistics for this tree
+            collect_node_stats(tree.start_node, stats)
+            
             population.append(safe_deepcopy(tree))
             pop_set.add(tree.math_expr)
     
-    return population
+    # Display statistics after population is created
+    stats.display_stats()
+    
+    return population, stats
 
 # save model results to files, including plots and expressions
 def save_model_results(model: Tree, X_data: np.ndarray, Y_data: np.ndarray, Y_pred: np.ndarray, 
@@ -359,6 +504,8 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
                  target_func: str = None) -> Tree:
     """Run the evolutionary algorithm with the given parameters"""
 
+    start_time = time.time()
+
     # Convert inputs to PyTorch tensors
     if isinstance(X_data, np.ndarray):
         X_data = to_tensor(X_data, requires_grad=requires_grad)
@@ -368,13 +515,13 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     # Ensure X_data is 2D
     if X_data.dim() == 1:
         X_data = X_data.reshape(-1, 1)
-
+    
     data = torch.column_stack((X_data, Y_data))
     
     # Create DataFrame from detached tensors for initialization
     data_np = data.detach().numpy()
     print("Creating diverse population...")
-    start_models = create_diverse_population(
+    start_models, stats = create_diverse_population(
         pd.DataFrame(data_np),
         requires_grad=requires_grad,
         population_size=population_size,
@@ -389,7 +536,7 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     
     print("Starting evolution...")
     final_model = evolution(num_epochs, start_models, data)
-    
+    end_time = time.time()
     # Evaluate and visualize results
     print("Evaluating and visualizing results...")
     Y_aprox = evaluate_model(final_model, X_data)
@@ -412,14 +559,15 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     print(final_model.print_tree())
     print("\nMathematical Expression:")
     print(final_model.math_expr)
-    from simplifying import simplify_expression
-    print("Simplified Expression:", simplify_expression(final_model.math_expr))
+    # from simplifying import simplify_expression
+    # print("Simplified Expression:", simplify_expression(final_model.math_expr))
+    print(f"=============Time taken: {end_time - start_time:.2f} seconds=============")
     
-    if requires_grad:
-        print("\nGradients:")
-        gradients = final_model.grad
-        print("gradients:", gradients)
-        print("gradients.shape:", gradients.shape)
+    # if requires_grad:
+    #     print("\nGradients:")
+    #     gradients = final_model.grad
+    #     print("gradients:", gradients)
+    #     print("gradients.shape:", gradients.shape)
 
     # Save results if flag is set
     if SAVE_RESULTS:
@@ -444,32 +592,33 @@ if __name__ == "__main__":
     # Y_data = X_data**5  # Example target function: x^2
     # Y_data = np.exp(-1*(X_data-4)**2)  # Example target function: x^2
     Y_data = np.e ** (-1*(X_data)**2)  # Example target function: e^(-x^2)
+    # Y_data = np.e ** (-1*(X_data)**2)  # Example target function: e^(-x^2)
     # Y_data = 2*np.sin(0.5*X_data) + 5*np.cos(2*X_data)  # Example target function: x^2
     # Y_data = np.power(X_data.flatten(), 2)  # Example target function: x^5
     # # Y_data = 5*np.ones(100)  # Example target function: x^5
     # # Y_data = 1/(X_data) # Example target function: x^5
     
-    if not FIXED_SEED:
-        models = []
-        for i in range(10):
-            model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="e^(-x^2)")
-            models.append(model)
-        for model in models:
-            print(model.math_expr)
-            print(model.error)
-            print(model.forward_loss)
-        best_model = min(models, key=lambda x: x.error)
-        print("Best model:")
-        print(best_model.math_expr)
-        print(best_model.error)
-        print(best_model.forward_loss)
-    else:
-        model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="e^(-x^2)")
+    # if not FIXED_SEED:
+    #     models = []
+    #     for i in range(10):
+    #         model = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="e^(-x^2)")
+    #         models.append(model)
+    #     for model in models:
+    #         print(model.math_expr)
+    #         print(model.error)
+    #         print(model.forward_loss)
+    #     best_model = min(models, key=lambda x: x.error)
+    #     print("Best model:")
+    #     print(best_model.math_expr)
+    #     print(best_model.error)
+    #     print(best_model.forward_loss)
+    # else:
+    #     model1 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="e^(-x^2)")
     
     # Example usage with multiple variables
-    # print("\nMultiple variables example:")
-    # X_data = np.random.uniform(-5, 5, (500, 2))  # 2 variables
-    # Y_data = X_data[:, 0]**2 + X_data[:, 1]**2  # Example target function: x0^2 + x1^2
+    print("\nMultiple variables example:")
+    X_data = np.random.uniform(-5, 5, (100, 2))  # 2 variables
+    Y_data = X_data[:, 0]**2 + X_data[:, 1]**2  # Example target function: x0^2 + x1^2
     # # Y_data = 2*X_data[:, 0] + 5*X_data[:, 1]  # Example target function: x0^2 + x1^2
     # if not FIXED_SEED:
     #     models = []
@@ -489,11 +638,11 @@ if __name__ == "__main__":
     #     model2 = run_evolution(X_data, Y_data, requires_grad=REQUIRES_GRAD, target_func="x0^2 + x1^2")
     #     print(model2)
 
-    # # Load and process dataset examples
-    # data_list = load_data()
-    # for func_name, data in data_list:
-    #     print(f"\nProcessing function: {func_name}")
-    #     run_evolution(data.iloc[:, :-1].values, data.iloc[:, -1].values, 
-    #                  requires_grad=REQUIRES_GRAD, target_func=func_name)
+    # Load and process dataset examples
+    data_list = load_data()
+    for func_name, data in data_list:
+        print(f"\nProcessing function: {func_name}")
+        run_evolution(data.iloc[:, :-1].values, data.iloc[:, -1].values, 
+                     requires_grad=REQUIRES_GRAD, target_func=func_name)
 
-    
+

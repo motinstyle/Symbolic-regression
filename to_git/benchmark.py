@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 # Create a folder for saving data
-output_folder = "datasets"
+output_folder = "new_datasets"
 os.makedirs(output_folder, exist_ok=True)
 
 # Set of equations (approximately from Feynman equations)
@@ -98,7 +98,8 @@ for func_name, func, vars in functions:
         continue
 
     # Add noise
-    noise = 0.05 * np.random.randn(num_samples)
+    # noise = 0.05 * np.random.randn(num_samples)
+    noise = 0.05 * (np.max(data["output"]) - np.min(data["output"])) * np.random.randn(num_samples)
     data["output"] += noise
 
     # Save to CSV file

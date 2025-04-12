@@ -1,0 +1,35 @@
+Evaluating 1d model...
+data created with shape: (100, 100, 2)
+data_torch created with shape: torch.Size([100, 100, 2])
+---------- RESULTS 1D ----------
+scipy time inv: 11.4859459400177
+torch time inv: 19.28967022895813
+torch time abs: 15.174294471740723
+
+Evaluating 2d model...
+data created with shape: (100, 100, 3)
+data_torch created with shape: torch.Size([100, 100, 3])
+Точка 1: Оптимизация не удалась. Статус: Maximum number of iterations has been exceeded.
+---------- RESULTS 2D ----------
+scipy time inv: 29.625717401504517
+torch time inv: 18.14507794380188
+scipy time abs: 25.839149475097656
+torch time abs: 15.832305431365967
+PS D:\projects\cvut dz\bc_project\to_git\check_folder> python .\speed_test.py
+Evaluating 1d model...
+data created with shape: (100, 1000, 2)
+data_torch created with shape: torch.Size([100, 1000, 2])
+---------- RESULTS 1D ----------
+scipy time inv: 109.90774917602539
+torch time inv: 18.083879470825195
+scipy time abs: 101.5203788280487
+torch time abs: 23.868882417678833
+
+Evaluating 2d model...
+data created with shape: (100, 1000, 3)
+data_torch created with shape: torch.Size([100, 1000, 3])
+---------- RESULTS 2D ----------
+scipy time inv: 281.44943356513977
+torch time inv: 19.02034616470337
+scipy time abs: 248.0630943775177
+torch time abs: 24.693347454071045

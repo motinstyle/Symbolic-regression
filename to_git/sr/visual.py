@@ -125,3 +125,59 @@ def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse:
     plt.suptitle(title)
     plt.tight_layout()
     plt.show()
+
+
+def plot_2d_scatter(X, y, title: str = "Scatter Plot"):
+    """
+    Plot 2D scatter plot of input data (X) and target values (y).
+    
+    Args:   
+        X: Input data (numpy array)
+        y: Target values (numpy array)
+    """
+    plt.figure(figsize=(10, 8))
+    plt.scatter(X[:, 0], X[:, 1], c=y, cmap='viridis')
+    plt.title(title)
+    plt.show()
+
+def plot_3d_scatter(X, y, title: str = "Scatter Plot"):
+    """
+    Plot 3D scatter plot of input data (X) and target values (y).
+    
+    Args:
+        X: Input data (numpy array)
+        y: Target values (numpy array)
+    """
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')  
+
+    # Create scatter plot
+    scatter = ax.scatter(X[:, 0], X[:, 1], y, c=y, cmap='viridis')
+    
+    # Add labels and colorbar
+    ax.set_xlabel('X1') 
+    ax.set_ylabel('X2')
+    ax.set_zlabel('Y')
+    plt.colorbar(scatter)
+    plt.axis('equal')
+    plt.title(title)
+    plt.show()
+
+def plot_scatter(X, y, title: str = "Scatter Plot"):
+    """
+    Plot scatter plot of input data (X) and target values (y).
+    
+    Args:
+        X: Input data (numpy array)
+        y: Target values (numpy array)
+        title: Title for the plot
+    """
+    if X.shape[-1] == 1:
+        plot_2d_scatter(X, y, title)
+    elif X.shape[-1] == 2:
+        plot_3d_scatter(X, y, title)
+    else:
+        raise ValueError("Invalid input data dimensions")
+
+
+

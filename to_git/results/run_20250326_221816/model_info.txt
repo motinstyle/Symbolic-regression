@@ -1,0 +1,30 @@
+==================================================
+Model Information
+==================================================
+
+Mathematical Expression:
+------------------------------
+(atan(atan(sin(sin(sin(sqrt(abs(x0))))))) / -6.110165119171143)
+
+Target Function:
+------------------------------
+atan_div_plus
+
+Model Structure:
+------------------------------
+Root: div_0
+|--- atan_2
+    \--- atan_3
+        \--- sin_4
+            \--- sin_5
+                \--- sin_6
+                    \--- sqrt_7
+                        \--- abs_8
+                            \--- ident_9
+                                \--- x0
+\--- const_1
+    \--- tensor(-6.1102)
+
+Model Performance:
+------------------------------
+Final Error: 0.898350
