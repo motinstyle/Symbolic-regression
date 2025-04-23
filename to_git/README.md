@@ -137,12 +137,16 @@ The implementation consists of several Python modules:
 
 ### Main Module (`sr_test.py`)
 The main module orchestrates the symbolic regression process. Key features include:
-- Data loading and preprocessing
+- Command-line argument parsing using argparse
+- Data loading from specified directories
 - Initial population generation with unique expression tracking
 - Evolution process control with NSGA-II selection
 - Model evaluation and visualization
+- Support for multiple independent runs and best model selection
 
 Main functions:
+- `parse_arguments()`: Parses command-line arguments for customizing program execution
+- `load_data()`: Loads data from CSV files in a specified directory
 - `create_diverse_population()`: Generates initial population with guaranteed function coverage and unique expressions
 - `build_random_tree()`: Creates random expression trees with optional constant nodes and tracking variable counts
 - `run_evolution()`: Executes the evolutionary algorithm with unique expression tracking
@@ -179,11 +183,50 @@ Required dependencies:
 ```bash
 pip install numpy torch pandas matplotlib scipy
 ```
+Or use `requirements.txt` file for enviromental setting 
 
 ## Usage Guide
 
-### Basic Usage
-To run symbolic regression on your data:
+### Command-Line Usage
+The program now supports command-line arguments for easier execution:
+
+```bash
+# Run with a specific data directory
+python sr_test.py --data_dir "../datasets"
+
+# Run for a specific function in the data directory
+python sr_test.py --data_dir "../datasets" --function "sin_x"
+
+# Customize algorithm parameters
+python sr_test.py --data_dir "../datasets" --epochs 50 --population 100 --max_depth 5
+
+# Run multiple independent trials and select the best result
+python sr_test.py --data_dir "../datasets" --runs 5
+
+# Enable gradient computation for inverse error evaluation
+python sr_test.py --data_dir "../datasets" --requires_grad
+```
+
+Available command-line arguments:
+- `--data_dir`: Directory containing dataset CSV files
+- `--function`: Specific function to test (optional)
+- `--epochs`: Number of evolution epochs
+- `--start_population_size`: Initial population size 
+- `--population`: Population size
+- `--mutation_prob`: Mutation probability
+- `--max_depth`: Maximum tree depth
+- `--requires_grad`: Enable gradient computation
+- `--runs`: Number of independent runs to perform
+- `--requires_forward_error`: Enable forward error computation
+- `--requires_inv_error`: Enable inverse error computation
+- `--requires_abs_inv_error`: Enable absolute inverse error computation
+- `--requires_spatial_abs_inv_error`: Enable spatial absolute inverse error computation
+- `--use_functions`: Comma-separated list of function names to use (e.g., "sum_,mult_,sin_,cos_"). If not specified, all functions will be used
+- `--list_functions`: List all available functions and exit
+- `--save_results`: Save results instead of displaying them
+
+### Programmatic Usage
+To run symbolic regression programmatically:
 
 ```python
 from sr_test import run_evolution
@@ -204,7 +247,7 @@ model = run_evolution(
 )
 
 # Print the resulting expression
-print(model.to_math_expr())
+print(model.math_expr)
 ```
 
 ### Data Format
@@ -219,6 +262,20 @@ For CSV files, the format should be:
 
 ### Configuration Parameters
 Key parameters that can be adjusted in `parameters.py`:
+- `SAVE_RESULTS`: Save results instead of displaying
+- `NUM_OF_RUNS`: How many times will be one expression evaluated 
+- `REQUIRES_FORWARD_ERROR`: Use RMSE fitness function as a metric
+- `REQUIRES_INV_ERROR`: Use RMSE of inverse prediction fitness function as a metric
+- `REQUIRES_ABS_ERROR`: Use RMSE of orthogonal points predictions fitness function as a metric
+- `REQUIRES_SPATIAL_ABS_ERROR`: Use RMSE of inputs from orthogonal points predictions fitness function as a metric
+- `INV_ERROR_EVAL_FREQ`: Frequency of inverse loss usage  
+- `ABS_INV_ERROR_EVAL_FREQ`: Frequency of orthogonal loss usage 
+- `SPATIAL_INV_ERROR_EVAL_FREQ`: Frequency of orthogonal spatial loss usage
+- `NUM_OF_POINTS_FOR_CONST_NODE_CHECK`: Sampling of the input space for constant node detection
+- `CONST_NODE_CHECK_MAGNITUDE`: What deviation from mean should be still considered as a constant
+- `ALLOW_CONSTANTS`: Enable usage of constants in expressions
+- `VARIABLES_OR_CONSTANTS_PROB`: Probability of using variable as a leaf node instead of a constant
+- `NUM_OF_START_MODELS`: Size of the initial population (default: 1000)
 - `POPULATION_SIZE`: Size of the population (default: 100)
 - `NUM_OF_EPOCHS`: Number of evolution generations (default: 100)
 - `MUTATION_PROB`: Probability of mutation (default: 0.25)
@@ -228,6 +285,78 @@ Key parameters that can be adjusted in `parameters.py`:
 - `CONST_MUTATION_PROB`: Probability of mutating constants when CONST_OPT is False (default: 0.25)
 - `SELECTION_METHOD`: Model selection method ("NSGA-II" or "top_k")
 - `FIXED_SEED`: Random seed for reproducibility (default: 3)
+Whn programm is launched without input arguments, these parameters will be used 
+
+#### Error Evaluation Parameters
+The program supports various error metrics that can be enabled in `parameters.py`:
+- `REQUIRES_INV_ERROR`: Enable inverse error evaluation (default: False)
+  - When enabled, evaluates how well the inverse of the model approximates the original inputs
+  - Uses PyTorch-based optimization via `eval_inv_error_torch` function
+  - Controlled by `INV_ERROR_EVAL_FREQ` to set evaluation frequency
+
+- `REQUIRES_ABS_ERROR`: Enable absolute inverse error evaluation (default: True)
+  - Evaluates RMSE between original and predicted inputs using optimization
+  - Uses `eval_abs_inv_error_torch` which applies batch gradient descent
+  - Controlled by `ABS_INV_ERROR_EVAL_FREQ` to set evaluation frequency
+
+- `REQUIRES_SPATIAL_ABS_ERROR`: Enable spatial absolute error evaluation (default: False)
+  - Evaluates only the spatial component of the absolute inverse error
+  - Measures Euclidean distance between original and optimized inputs
+
+- `NUM_OF_POINTS_FOR_CONST_NODE_CHECK`: Number of points to check for constant nodes (default: 1000)
+  - Used to detect when a subtree evaluates to a constant across input points
+
+- `CONST_NODE_CHECK_MAGNITUDE`: Range magnitude for constant node detection (default: 30)
+  - Defines the range of inputs used to verify if nodes behave as constants
+
+These error metrics provide different ways to assess model accuracy and can be combined to guide the evolutionary process.
+
+### Error Calculation
+
+The total error of a model combines multiple components based on the enabled error metrics:
+```python
+error = forward_loss
+```
+
+When additional error metrics are enabled:
+```python
+if REQUIRES_INV_ERROR:
+    error += inv_loss
+
+if REQUIRES_ABS_ERROR:
+    error += abs_loss
+    
+if REQUIRES_SPATIAL_ABS_ERROR:
+    error += spatial_loss
+```
+
+Where:
+- `forward_loss`: Mean squared error on predictions
+- `inv_loss`: Error from inverse function approximation using PyTorch optimization
+- `abs_loss`: Absolute inverse error (optimization-based with batch gradient descent)
+- `spatial_loss`: Spatial component of the absolute error (Euclidean distance in input space)
+- `domain_penalty`: Penalty for violating function domain constraints (not available in this version)
+
+The program adapts the error calculation based on which metrics are enabled, focusing computational resources on the relevant error components.
+
+### Inverse Function Approximation and Absolute Inverse Error
+
+The program uses PyTorch-based optimization for inverse function approximation and absolute inverse error evaluation.
+
+Key features of Inverse Function Approximation:
+- Uses PyTorch's Adam optimizer instead of scipy's methods
+- Performs batch gradient descent for efficiency
+- Applies normalization to improve optimization
+- Includes gradient clipping to prevent numerical instability
+- Filters points that are outside the model's output range
+- Calculates error as the Euclidean distance in the input space
+
+Key features of Absolute Inverse Error:
+- Combines both spatial and output errors in a unified metric
+- Uses PyTorch's automatic differentiation
+- Performs batch optimization for efficiency
+- Calculates RMSE incorporating both input and output space differences
+- Handles numerical instabilities by checking for NaN/Inf values
 
 ## Implementation Details
 
@@ -287,37 +416,6 @@ The implementation uses an improved evolution strategy:
    - Updates variable counts after mutation
 4. This strategy focuses computational effort on promising models and maintains higher diversity.
 
-### Inverse Function Approximation (if REQUIRES_GRAD is True, currently not used in experiments)
-The program uses optimization-based inverse function approximation:
-```python
-def eval_inv_error(self, data):
-    """
-    Evaluates inverse error using scipy.optimize.minimize.
-    For each point in the dataset, tries to find x such that f(x) = y.
-    """
-    # Normalize data for better optimization
-    X = (X - X.mean(axis=0)) / X.std(axis=0)
-    y = (y - y.mean()) / y.std()
-    
-    # For each sample point
-    for i in range(n_samples):
-        # Use current X as initial guess
-        result = opt.minimize(
-            self.wrapped_tree_func,
-            x0=X[i],
-            args=(y[i],),
-            method='BFGS',
-            options={'maxiter': 10}
-        )
-```
-
-Key features:
-- Uses BFGS optimization method (can be changed to other optimization methods)
-- Normalizes input data
-- Limited to 10 iterations for efficiency
-- Handles optimization failures gracefully
-- Returns squared error between found and original inputs
-
 ### Model Selection
 
 The implementation supports two selection methods:
@@ -352,18 +450,6 @@ The evolution process maintains diversity by:
 2. Attempting multiple crossovers/mutations to generate new expressions
 3. Only adding models with unique mathematical expressions to the population
 
-### Error Calculation
-
-The total error of a model combines multiple components:
-```python
-error = forward_loss + domain_penalty + inv_loss(if REQUIRES_GRAD is True)
-```
-
-Where:
-- `forward_loss`: Mean squared error on predictions
-- `domain_penalty`: Penalty for violating function domain constraints
-- `inv_loss`: Error from inverse function approximation (if enabled)
-
 ## Performance Tips
 - Use smaller population sizes for initial testing
 - Enable REQUIRES_GRAD only when inverse error is needed
@@ -371,3 +457,5 @@ Where:
 - Adjust mutation and crossover probabilities based on problem complexity
 - Use appropriate max_depth for your problem
 - Consider enabling constant optimization for problems requiring precise constants
+- For large datasets or multiple functions, use the command-line interface with the `--data_dir` argument
+- When exploring different parameter settings, try multiple runs with `--runs N` to find the best model

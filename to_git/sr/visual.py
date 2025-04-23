@@ -2,8 +2,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
 
-def plot_results(X, y_true, y_pred, title="Model Comparison"):
-    """Plot actual vs predicted results with error handling for invalid values."""
+def plot_results(X, y_true, y_pred, title="Model Comparison", return_plot: bool = False):
+    """Plot actual vs predicted results with error handling for invalid values.
+    
+    Args:
+        X: Input data
+        y_true: True values
+        y_pred: Predicted values
+        title: Title for the plot
+        save_plot: Whether to save the plot immediately (deprecated, use return_fig=True instead)
+    
+    Returns:
+        fig: Matplotlib figure object if return_fig=True, otherwise None
+    """
     # Check for infinite or NaN values
     valid_mask = np.isfinite(y_true) & np.isfinite(y_pred)
     if isinstance(X, np.ndarray) and len(X.shape) == 2 and X.shape[1] == 2:
@@ -16,7 +27,7 @@ def plot_results(X, y_true, y_pred, title="Model Comparison"):
 
     if len(y_true) == 0 or len(y_pred) == 0:
         print("No valid data points available for plotting.")
-        return
+        return None
 
     if isinstance(X, np.ndarray) and len(X.shape) == 2 and X.shape[1] == 2:
         # 3D plots for two input variables
@@ -62,7 +73,7 @@ def plot_results(X, y_true, y_pred, title="Model Comparison"):
         
     else:
         # 2D plot for single input variable
-        plt.figure(figsize=(10, 6))
+        fig = plt.figure(figsize=(10, 6))
         
         # Sort points by X value for better line plotting
         sort_idx = np.argsort(X)
@@ -78,9 +89,13 @@ def plot_results(X, y_true, y_pred, title="Model Comparison"):
         plt.legend()
         plt.grid(True, alpha=0.3)
     
-    plt.show()
+    if return_plot:
+        return fig
+    else:
+        plt.show()
 
-def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse: np.ndarray, title: str = "Training Error History"):
+
+def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse: np.ndarray, title: str = "Training Error History", return_plot: bool = False):
     """
     Plot RMSE statistics history in three subplots.
     
@@ -89,8 +104,11 @@ def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse:
         median_rmse: Array of median RMSE values over epochs
         best_rmse: Array of best RMSE values over epochs
         title: Title for the overall figure
+        
+    Returns:
+        fig: Matplotlib figure object
     """
-    plt.figure(figsize=(15, 5))
+    fig = plt.figure(figsize=(15, 5))
     
     # Mean RMSE subplot
     plt.subplot(131)
@@ -124,7 +142,10 @@ def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse:
     
     plt.suptitle(title)
     plt.tight_layout()
-    plt.show()
+    if return_plot:
+        return fig
+    else:
+        plt.show()
 
 
 def plot_2d_scatter(X, y, title: str = "Scatter Plot"):

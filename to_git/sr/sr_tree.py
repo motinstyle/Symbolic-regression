@@ -64,23 +64,10 @@ class Node:
     def eval_node(self, varval=None, cache: bool = True):
         """Evaluate node with PyTorch tensors and optional gradient computation"""
         if varval is not None:
-            # print("varval.shape:", varval.shape)
-            # print("varval.type:", type(varval))
-            # print("varval:", varval)
             if isinstance(varval, np.ndarray):
-                # print("before to_tensor")
                 varval = to_tensor(varval, requires_grad=False)
-                # print("after to_tensor")
             if varval.dim() == 1:
                 varval = varval.reshape(-1, 1)
-                # varval = varval.reshape(1, -1)
-                # print("varval.shape after reshape:", varval.shape)
-            
-        # # Return cached result if available
-        # if cache and self._cached_output is not None:
-        #     print("self._cached_output.shape:", self._cached_output.shape)
-        #     print("self._cached_output:", self._cached_output)
-        #     return self._cached_output
 
         # Evaluate based on node type
         if self.t_name == "var":
@@ -108,9 +95,6 @@ class Node:
         if CONST_OPT and isinstance(self.scale, torch.Tensor):
             result = self.scale * result + self.bias
 
-        # if cache:
-        #     self._cached_output = result
-        # print("result.shape:", result.shape)
         return result
 
     # calculate total domain penalty for the node
@@ -253,7 +237,8 @@ class Tree:
         self.forward_loss = 0
         self.inv_loss = 0
         self.abs_loss = 0
-        self.domain_loss = 0
+        self.spatial_abs_loss = 0
+        # self.domain_loss = 0
         self.max_num_of_node = 0
         self.error = 0
         self.requires_grad = requires_grad
@@ -273,6 +258,10 @@ class Tree:
         self.domination_count = 0
         self.dominated_models = None
         self.is_unique = True
+
+        self.error_history = None
+        self.min_rmse_loss = None
+        self.best_rmse = None
 
         self.grad = None
 
@@ -439,7 +428,8 @@ class Tree:
         self.forward_loss = 0
         self.inv_loss = 0
         self.abs_loss = 0
-        self.domain_loss = 0
+        self.spatial_abs_loss = 0
+        # self.domain_loss = 0
 
     # forward pass with gradients if gradient is required (for inverse pass)
     def forward_with_gradients(self, varval: torch.Tensor, cache: bool = True):
@@ -537,7 +527,7 @@ class Tree:
         self.math_expr = self.to_math_expr()
 
     # evaluate tree error 
-    def eval_tree_error(self, data: Union[np.ndarray, torch.Tensor], inv_error: bool = False, abs_error: bool = False):
+    def eval_tree_error(self, data: Union[np.ndarray, torch.Tensor], forward_error: bool = False, inv_error: bool = False, abs_error: bool = False, spatial_abs_error: bool = False):
         """Evaluate tree error without constant optimization"""
         if isinstance(data, np.ndarray):
             data = torch.from_numpy(data).float()
@@ -551,21 +541,24 @@ class Tree:
         y_true = data[:, -1].reshape(-1, 1)
         
         # Initialize domain_loss
-        self.domain_loss = 0.0
+        # self.domain_loss = 0.0
         
-        try:
-            
-            # evaluate tree on whole dataset
-            y_pred = self.forward(X)
+        # evaluate tree on whole dataset
+        y_pred = self.forward(X)
 
-            # Calculate forward_loss in any case (RMSE)
-            forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
-            self.forward_loss = forward_loss
-            if np.isinf(self.forward_loss):
-                print("forward_loss is inf for model:", self.to_math_expr())
-            elif np.isnan(self.forward_loss):
-                print("forward_loss is nan for model:", self.to_math_expr())
-            error = forward_loss
+        try:
+            if forward_error:
+                # # evaluate tree on whole dataset
+                # y_pred = self.forward(X)
+
+                # Calculate forward_loss in any case (RMSE)
+                forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+                if np.isinf(self.forward_loss):
+                    print("forward_loss is inf for model:", self.to_math_expr())
+                elif np.isnan(self.forward_loss):
+                    print("forward_loss is nan for model:", self.to_math_expr())
+                self.forward_loss = forward_loss
+                error += forward_loss
 
             if inv_error:
                 # Calculate inversion error only if it's required
@@ -578,15 +571,55 @@ class Tree:
                 self.inv_loss = total_inv_loss
                 error += total_inv_loss
 
-            if abs_error:
-                total_abs_loss = self.eval_abs_inv_error(data)
-                # total_abs_loss = self.eval_abs_inv_error_torch(data)
+            if spatial_abs_error and abs_error:
+                # print("y_pred.type():", y_pred.type())
+                # print("y_pred.dim():", y_pred.dim())           
+                predicted_limits = torch.clamp(torch.max(y_pred) - torch.min(y_pred), -MAX_VALUE, MAX_VALUE)
+                # print("predicted_limits:", predicted_limits)
+                # print("predicted_limits.dim() in eval_tree_error:", predicted_limits.dim())
+                # print("predicted_limits.type() in eval_tree_error:", predicted_limits.type())
+                total_spatial_abs_loss, total_abs_loss = self.eval_abs_inv_error_torch(data, pred_limits=predicted_limits)
+                # print("total_spatial_abs_loss.type():", type(total_spatial_abs_loss))
+                # print("total_abs_loss.type():", type(total_abs_loss))
+                # print("total_spatial_abs_loss.dim():", total_spatial_abs_loss.dim())
+                # print("total_abs_loss.dim():", total_abs_loss.dim())
+                self.abs_loss = total_abs_loss
+                self.spatial_abs_loss = total_spatial_abs_loss
+                if np.isinf(total_abs_loss):
+                    print("total_abs_loss is inf for model:", self.to_math_expr())
+                elif np.isnan(total_abs_loss):
+                    print("total_abs_loss is nan for model:", self.to_math_expr())
+                if np.isinf(total_spatial_abs_loss):
+                    print("total_spatial_abs_loss is inf for model:", self.to_math_expr())
+                elif np.isnan(total_spatial_abs_loss):
+                    print("total_spatial_abs_loss is nan for model:", self.to_math_expr())
+                error += total_abs_loss
+                error += total_spatial_abs_loss
+
+            elif abs_error:
+                # calculate abs error using numpy
+                # total_abs_loss = self.eval_abs_inv_error(data)
+                
+                # calculate abs error using torch
+                predicted_limits = torch.clamp(torch.max(y_pred) - torch.min(y_pred), -MAX_VALUE, MAX_VALUE)                
+                total_abs_loss = self.eval_abs_inv_error_torch(data, pred_limits=predicted_limits, error_type="abs")
                 self.abs_loss = total_abs_loss
                 if np.isinf(total_abs_loss):
                     print("total_abs_loss is inf for model:", self.to_math_expr())
                 elif np.isnan(total_abs_loss):
                     print("total_abs_loss is nan for model:", self.to_math_expr())
                 error += total_abs_loss
+
+            elif spatial_abs_error:
+                # calculate abs error using torch
+                predicted_limits = torch.clamp(torch.max(y_pred) - torch.min(y_pred), -MAX_VALUE, MAX_VALUE)                
+                total_spatial_abs_loss = self.eval_abs_inv_error_torch(data, pred_limits=predicted_limits, error_type="spatial")
+                self.spatial_abs_loss = total_spatial_abs_loss
+                if np.isinf(total_spatial_abs_loss):
+                    print("total_spatial_abs_loss is inf for model:", self.to_math_expr())
+                elif np.isnan(total_spatial_abs_loss):
+                    print("total_spatial_abs_loss is nan for model:", self.to_math_expr())
+                error += total_spatial_abs_loss
 
             if np.isnan(error) or np.isinf(error):
                 error = float('inf')
@@ -603,6 +636,9 @@ class Tree:
                 self.inv_loss = float('inf')
             if abs_error:
                 self.abs_loss = float('inf')
+            if spatial_abs_error:
+                self.spatial_abs_loss = float('inf')
+            quit()
             return float('inf')
 
     # wrapper function for optimization that computes squared difference between tree output and target
@@ -612,14 +648,6 @@ class Tree:
         x = x.astype(np.float64)
         x_tensor = to_tensor(x.reshape(1, -1), requires_grad=self.requires_grad)
         y_pred = self.forward(varval=np.array(x_tensor.detach().numpy())).detach().numpy().astype(np.float64)
-        
-        # print("self.to_math_expr():", self.to_math_expr())
-        # print("y_pred.shape:", y_pred.shape)
-        # print("target_y:", target_y)
-        # print("y_pred.size:", y_pred.size)
-        # print("y_pred.flatten():", y_pred.flatten())
-        # print("y_pred.item():", y_pred.item())
-        # quit()
 
         # Ensure we have a scalar output (MSE)
         if y_pred.size > 1:
@@ -736,7 +764,7 @@ class Tree:
         return total_inv_error / len(y)
         # return total_inv_error
 
-    def eval_inv_error_torch(self, data: Union[np.ndarray, torch.Tensor], steps=100, lr=0.001) -> float:
+    def eval_inv_error_torch(self, data: Union[np.ndarray, torch.Tensor], steps=50, lr=0.001) -> float:
         """
         Evaluate inverse error using PyTorch optimization.
         Hybrid initialization:
@@ -754,10 +782,10 @@ class Tree:
         else:
             data = data.clone().detach().to(device)
 
-        mean_x = data[:, :-1].mean(dim=0)
-        std_x = data[:, :-1].std(dim=0)
-        std_x[std_x == 0] = 1.0  # Avoid division by zero
-        data[:, :-1] = (data[:, :-1] - mean_x) / std_x
+        # mean_x = data[:, :-1].mean(dim=0)
+        # std_x = data[:, :-1].std(dim=0)
+        # std_x[std_x == 0] = 1.0  # Avoid division by zero
+        # data[:, :-1] = (data[:, :-1] - mean_x) / std_x
 
         # mean_y = data[:, -1].mean(dim=0)
         # std_y = data[:, -1].std(dim=0)
@@ -772,10 +800,7 @@ class Tree:
         # Compute data limits
         data_limits = X_data.max(dim=0).values - X_data.min(dim=0).values
         tolerance = 0.01 * (y_target.max() - y_target.min())
-        # print("tolerance:", tolerance)
         max_error = torch.norm(data_limits).item()
-        # print("max_error:", max_error)
-        # quit()
 
         # If tree is constant, return max error
         if self.depth == 0:
@@ -811,7 +836,7 @@ class Tree:
             loss = ((y_pred - y_target) ** 2).mean()
 
             if torch.isnan(loss) or torch.isinf(loss):
-                print("Loss exploded during optimization for model:", self.to_math_expr())
+                print("Loss exploded in eval_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_error =", max_error)
                 return max_error
 
             loss.backward()
@@ -829,9 +854,11 @@ class Tree:
             #     plot_scatter(X_optim.to("cpu").numpy(), y_final.to("cpu").numpy().flatten(), "Optimized")
             # except Exception as e:
             #     print(f"Error plotting scatter: {e}")
+            # quit()
+
+            # X_optim = X_optim*std_x + mean_x
 
             spatial_error = torch.norm(X_optim - X_data[mask_in_range], dim=1)
-            X_optim = X_optim*std_x + mean_x
             error = torch.where(success_mask, spatial_error, torch.full_like(spatial_error, max_error))
             # print(f"error.mean().item() for model {self.math_expr} is: {error.mean().item()}")
             return error.mean().item()
@@ -918,12 +945,8 @@ class Tree:
                     # Извлекаем найденную точку
                     x_found = result.x
                     fun_error = result.fun
-                    # print(f"fun_error: {fun_error}")
-                    # print(f"x0: {x0}")
-                    # print(f"x_found: {x_found}, {type(x_found)}")
                     
                     # Вычисляем квадрат расстояния между исходной и найденной точками входа
-                    # print(f"x_found: {x_found}, {type(x_found)}, {x_found.shape}")
                     # sq_error = np.sum((x_found - x0)**2) + (self.forward(varval=torch.tensor(x_found).reshape(1, -1).float()) - target_y)**2
                     sq_error = fun_error
                     total_sq_error += sq_error
@@ -966,7 +989,7 @@ class Tree:
         print(f"Абсолютная обратная ошибка (RMSE): {rmse:.6f}")
         return rmse
 
-    def eval_abs_inv_error_torch(self, data: Union[np.ndarray, torch.Tensor], steps=50, lr=0.1, tol=1e-3, penalty=None) -> float:
+    def eval_abs_inv_error_torch(self, data: Union[np.ndarray, torch.Tensor], steps=50, lr=0.1, tol=1e-3, penalty=None, pred_limits=None, error_type=None) -> Union[float, Tuple[float, float]]:
         """
         Векторизованная версия абсолютной обратной ошибки (RMSE).
         Использует PyTorch для оптимизации. Штрафует несошедшиеся точки.
@@ -983,10 +1006,18 @@ class Tree:
         """
         # Определяем устройство - используем CUDA, если доступно
 
-        if self.abs_loss > 0:
-            return self.abs_loss
+        # print("in eval_abs_inv_error_torch with error_type =", error_type)
 
+        if error_type == "abs" and self.abs_loss > 0:
+            return self.abs_loss
+        elif error_type == "spatial" and self.spatial_abs_loss > 0:
+            return self.spatial_abs_loss
+        elif self.abs_loss > 0 and self.spatial_abs_loss > 0:
+            return (self.spatial_abs_loss, self.abs_loss)
+
+        # print("before device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
         # Подготавливаем данные - переносим на нужное устройство
         if isinstance(data, np.ndarray):
@@ -994,72 +1025,156 @@ class Tree:
         else:
             data = data.to(device=device, dtype=torch.float32)
 
+
+        # mean_x = data[:, :-1].mean(dim=0)
+        # std_x = data[:, :-1].std(dim=0)
+        # std_x[std_x == 0] = 1.0  # Avoid division by zero
+        # data[:, :-1] = (data[:, :-1] - mean_x) / std_x
+
+        # mean_y = data[:, -1].mean(dim=0)
+        # std_y = data[:, -1].std(dim=0)
+        # std_y[std_y == 0] = 1.0  # Avoid division by zero
+        # data[:, -1] = (data[:, -1] - mean_y) / std_y    
+
         # Разделяем входные и выходные данные
-        X_orig = data[:, :-1]
-        y_target = data[:, -1]
+        # print("before X_orig = data[:, :-1].clone().detach()")
+        X_orig = data[:, :-1].clone().detach()
+        y_target = data[:, -1].clone().detach() 
+
+        # define max_error
+        # print("pred_limits is None:", pred_limits is None)
+        if pred_limits is None:
+            pred_limits = torch.tensor(2*MAX_VALUE, dtype=torch.float32, device=device)
+            # print("setted pred_limits to 2*MAX_VALUE")
+
+        # print("before pred_limits.to(device=device, dtype=torch.float32).unsqueeze(0):", pred_limits)
+        pred_limits = pred_limits.to(device=device, dtype=torch.float32).unsqueeze(0)
+        # print("after pred_limits.to(device=device, dtype=torch.float32).unsqueeze(0):", pred_limits)
+        # print("pred_limits.type():", pred_limits.type())
+        # pred_limits = torch.max(pred_limits, torch.max(y_target.abs(), dim=0).values)
+        pred_limits = torch.max(pred_limits, torch.max(y_target, dim=0).values - torch.min(y_target, dim=0).values)
+        # print("pred_limits = torch.max(pred_limits, torch.max(y_target, dim=0).values - torch.min(y_target, dim=0).values)", pred_limits)
+        # print(f"pred_limits: {pred_limits}")
+        spatial_limits = torch.max(X_orig, dim=0).values - torch.min(X_orig, dim=0).values
+        # max_spatial_error = torch.norm(spatial_limits).item()
+        max_spatial_error = torch.norm(spatial_limits)
+        # print(f"spatial_limits: {spatial_limits}")
+        limits = torch.cat((spatial_limits, pred_limits), dim=0)
+        # max_error = torch.norm(limits).item()
+        max_error = torch.norm(limits)
+        
+        # Calculate clip value based on data limits (10% of max range)
+        clip_value = 0.1 * torch.max(spatial_limits).item()
+        # print(f"max_error: {max_error}")
+        # quit()
 
         # Создаем тензор для оптимизации с градиентами
         X_optim = X_orig.clone().detach().requires_grad_(True)
 
         # Создаем оптимизатор
-        optimizer = torch.optim.SGD([X_optim], lr=lr)
+        optimizer = torch.optim.Adam([X_optim], lr=lr)
 
         # Выполняем оптимизацию
         for _ in range(steps):
             optimizer.zero_grad()
             
             # Вычисляем предсказания модели
-            y_pred = self.forward(varval=X_optim.to("cpu"))
-            
-            # Убеждаемся, что выходы на том же устройстве, что и целевые значения
-            if y_pred.device != y_target.device:
-                y_pred = y_pred.to(device)
+            y_pred = self.forward(varval=X_optim.to("cpu")).to(device)
                 
             # Вычисляем функцию потерь
             # Compute squared L2 norm of concatenated (x,y) vectors for each point in batch
             loss = torch.mean(torch.sum((X_optim - X_orig)**2, dim=1) + (y_pred - y_target)**2)
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                
+                if error_type == "abs":
+                    print("Loss exploded in eval_abs_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_error =", max_error)
+                    return max_error.to("cpu")
+                elif error_type == "spatial":
+                    print("Loss exploded in eval_abs_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_spatial_error =", max_spatial_error)
+                    return max_spatial_error.to("cpu")
+                else:
+                    print("Loss exploded in eval_abs_inv_error_torch during optimization for model:", self.to_math_expr(), "returning (max_spatial_error, max_error) =", (max_spatial_error, max_error))
+                    return (max_spatial_error.to("cpu"), max_error.to("cpu"))
             
             # Вычисляем градиенты и делаем шаг оптимизации
             loss.backward()
+            # Apply gradient clipping based on data limits
+            torch.nn.utils.clip_grad_value_([X_optim], clip_value)
             optimizer.step()
 
         # Вычисляем финальное f(x') после оптимизации
         with torch.no_grad():
             # Убедимся, что все тензоры на одном устройстве перед вычислениями
-            y_final = self.forward(varval=X_optim.to("cpu"))
-            if y_final.device != device:
-                y_final = y_final.to(device)
-                
-            # Вычисляем абсолютную разницу в выходах
-            output_diff = torch.abs(y_final - y_target) # неправильно
 
-            # Автоматический penalty, если не задан
-            if penalty is None:
-                data_range = torch.max(X_orig, dim=0).values - torch.min(X_orig, dim=0).values
-                penalty = torch.sum(data_range).item()
+            if error_type == "abs":
+                y_final = self.forward(varval=X_optim.to("cpu")).to(device)
 
-            # Определяем маски для успешных и неудачных оптимизаций
-            success_mask = output_diff <= tol
-            fail_mask = ~success_mask
+                # compute error
+                concatenated_error = torch.cat((X_optim - X_orig, y_final - y_target.unsqueeze(1)), dim=1)
+                if concatenated_error.isnan().any() or concatenated_error.isinf().any():
+                    print(f"[{self.to_math_expr()}] concatenated_error contains NaN/Inf — skipping, returning max_error = {max_error}")
+                    return max_error.to("cpu")
+                # rmse = torch.mean(torch.sqrt(torch.sum(concatenated_error**2, dim=1))).item()
+                # rmse = torch.mean(torch.norm(concatenated_error, dim=1)).item()
+                rmse = torch.mean(torch.norm(concatenated_error, dim=1)).to("cpu")
+                if rmse.isnan() or rmse.isinf():
+                    print(f"[{self.to_math_expr()}] rmse contains NaN/Inf — skipping, returning max_error = {max_error}")
+                    return max_error.to("cpu")
+                # print("rmse1:", rmse)
+                # rmse = torch.sqrt(torch.mean(torch.sum(concatenated_error**2, dim=1))).item()
+                # print("rmse2:", rmse)
+                # quit()
+                if rmse > max_error:
+                    # print(f"[{self.to_math_expr()}] rmse ({rmse}) > max_error ({max_error}) — skipping, returning max_error = {max_error}")
+                    return max_error.to("cpu")
 
-            # Для успешных: sqrt(‖x' - x‖² + (f(x') - y)²)
-            spatial_diff_sq = torch.sum((X_optim - X_orig) ** 2, dim=1)
-            output_diff_sq = (y_final - y_target) ** 2
-            rmse_per_point = torch.sqrt(spatial_diff_sq + output_diff_sq)
+            elif error_type == "spatial":
+                # spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1)).item()
+                spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1))
+                if spatial_rmse.isnan() or spatial_rmse.isinf():
+                    print(f"[{self.to_math_expr()}] spatial_rmse contains NaN/Inf — skipping, returning max_spatial_error = {max_spatial_error}")
+                    return max_spatial_error.to("cpu")
+                if spatial_rmse > max_spatial_error:
+                    return max_spatial_error.to("cpu")
+                rmse = spatial_rmse.to("cpu")
+            
+            else: # error_type == "abs" and "spatial"
+                y_final = self.forward(varval=X_optim.to("cpu")).to(device)
+                # print("y_final.dim()", y_final.dim())
 
-            # Назначаем ошибку-пенальти там, где не сошлось
-            rmse_per_point = torch.where(success_mask, rmse_per_point, torch.full_like(rmse_per_point, penalty, device=device))
+                spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1))
+                # print("spatial_rmse.dim()", spatial_rmse.dim())
+                if spatial_rmse.isnan() or spatial_rmse.isinf():
+                    print(f"[{self.to_math_expr()}] spatial_rmse contains NaN/Inf — skipping, setting max_spatial_error = {max_spatial_error}")
+                    spatial_rmse = max_spatial_error
+                if spatial_rmse > max_spatial_error:
+                    spatial_rmse = max_spatial_error
+                # print("spatial_rmse.dim()", spatial_rmse.dim())
 
-            # Вывод статистики
-            total = len(y_target)
-            successful = success_mask.sum().item()
-            failed = fail_mask.sum().item()
-            print(f"Успешных оптимизаций: {successful}/{total} ({successful / total * 100:.1f}%)")
-            print(f"Неудачных оптимизаций: {failed}/{total} ({failed / total * 100:.1f}%)")
+                # compute abs error
+                concatenated_error = torch.cat((X_optim - X_orig, y_final - y_target.unsqueeze(1)), dim=1)
+                # print("concatenated_error.dim()", concatenated_error.dim())
+                if concatenated_error.isnan().any() or concatenated_error.isinf().any():
+                    print(f"[{self.to_math_expr()}] concatenated_error contains NaN/Inf — skipping, returning (spatial_rmse, max_error) = ({spatial_rmse}, {max_error})")
+                    return (spatial_rmse.to("cpu"), max_error.to("cpu"))
+                # rmse = torch.mean(torch.sqrt(torch.sum(concatenated_error**2, dim=1))).item()
+                abs_rmse = torch.mean(torch.norm(concatenated_error, dim=1))
+                # print("abs_rmse.dim()", abs_rmse.dim())
+                if abs_rmse.isnan() or abs_rmse.isinf():
+                    print(f"[{self.to_math_expr()}] abs_rmse contains NaN/Inf — skipping, returning (spatial_rmse, max_error) = ({spatial_rmse}, {max_error})")
+                    return (spatial_rmse.to("cpu"), max_error.to("cpu"))
+                # print("rmse1:", rmse)
+                # rmse = torch.sqrt(torch.mean(torch.sum(concatenated_error**2, dim=1))).item()
+                # print("rmse2:", rmse)
+                # quit()
+                if abs_rmse > max_error:
+                    # print(f"[{self.to_math_expr()}] abs_rmse ({abs_rmse}) > max_error ({max_error}) — skipping, returning max_error = {max_error}")
+                    abs_rmse = max_error
 
-            # Вычисляем общую RMSE и возвращаем
-            rmse = torch.sqrt(torch.mean(rmse_per_point ** 2)).item()
-            print(f"Абсолютная обратная ошибка (RMSE): {rmse:.6f}")
+                rmse = (spatial_rmse.to("cpu"), abs_rmse.to("cpu"))
+                # print("type(rmse[0]), type(rmse[1])", type(rmse[0]), type(rmse[1]))
+
             return rmse
 
     # print tree in a visual representation (as a bash tree command in terminal)
@@ -1210,8 +1325,6 @@ class Tree:
             return True
         
         try:
-            # from parameters import NUM_OF_POINTS_FOR_CONST_NODE_CHECK, CONST_NODE_CHECK_MAGNITUDE
-            
             # Generate random points from uniform distribution within range [-CONST_NODE_CHECK_MAGNITUDE, CONST_NODE_CHECK_MAGNITUDE]
             magnitude = CONST_NODE_CHECK_MAGNITUDE
             
@@ -1377,7 +1490,7 @@ def crossover(p1: Tree, p2: Tree) -> Tree:
     # Create a copy of the first parent
     child = safe_deepcopy(p1)
     child.reset_losses()
-
+    
     # Get valid node indices (exclude variable nodes if they would cause invalid indices)
     p1_valid_indices = [i for i in range(p1.max_num_of_node)]
     p2_valid_indices = [i for i in range(p2.max_num_of_node)]
@@ -1407,7 +1520,7 @@ def crossover(p1: Tree, p2: Tree) -> Tree:
     return child
 
 # mutate a tree (change random node according to its parity with multivariable support)
-def mutation(tree: Tree):
+def mutation(tree: Tree, desired_functions: List[str] = None):
     """Change random node according to its parity with multivariable support"""
     
     mutant = safe_deepcopy(tree)
@@ -1428,12 +1541,20 @@ def mutation(tree: Tree):
         
         # Get appropriate functions based on parity
         if new_node.parity == 1:
-            funcs = [func_info.func for func_info in get_functions_by_parity(1) 
-                    if func_info.name not in ['const_', 'ident_']]
+            if desired_functions:
+                funcs = [func_info.func for func_info in get_functions_by_parity(1) 
+                        if func_info.name not in ['const_', 'ident_'] and func_info.name in desired_functions]
+            else:
+                funcs = [func_info.func for func_info in get_functions_by_parity(1) 
+                        if func_info.name not in ['const_', 'ident_']]
             if funcs:
                 new_node.func = np.random.choice(funcs)
         else:
-            funcs = [func_info.func for func_info in get_functions_by_parity(2)]
+            if desired_functions:
+                funcs = [func_info.func for func_info in get_functions_by_parity(2)
+                        if func_info.name in desired_functions]
+            else:
+                funcs = [func_info.func for func_info in get_functions_by_parity(2)]
             if funcs:
                 new_node.func = np.random.choice(funcs)
 
@@ -1519,9 +1640,10 @@ def compute_domination(models: List[Tree]):
                 (models[i].error_is_set and models[j].error_is_set and \
                  np.isclose(models[i].forward_loss, models[j].forward_loss, atol=1e-6) and \
                  models[i].depth == models[j].depth and \
-                 np.isclose(models[i].domain_loss, models[j].domain_loss, atol=1e-6) and \
-                 np.isclose(models[i].abs_loss, models[j].abs_loss, atol=1e-6)) and \
-                 np.isclose(models[i].inv_loss, models[j].inv_loss, atol=1e-6):
+                 np.isclose(models[i].abs_loss, models[j].abs_loss, atol=1e-6) and \
+                 np.isclose(models[i].spatial_abs_loss, models[j].spatial_abs_loss, atol=1e-6) and \
+                 np.isclose(models[i].inv_loss, models[j].inv_loss, atol=1e-6)):
+                #  np.isclose(models[i].domain_loss, models[j].domain_loss, atol=1e-6) and \
                 models[j].is_unique = False
 
     # Step 2: Compute domination only among unique models
@@ -1535,14 +1657,16 @@ def compute_domination(models: List[Tree]):
             if (models[i].forward_loss <= models[j].forward_loss and \
                 models[i].max_num_of_node <= models[j].max_num_of_node and \
                 models[i].depth <= models[j].depth and \
-                models[i].domain_loss <= models[j].domain_loss and \
                 models[i].abs_loss <= models[j].abs_loss and \
                 models[i].inv_loss <= models[j].inv_loss and \
+                models[i].spatial_abs_loss <= models[j].spatial_abs_loss and \
                 (models[i].forward_loss < models[j].forward_loss or \
                  models[i].depth < models[j].depth or \
-                 models[i].domain_loss < models[j].domain_loss or \
                  models[i].abs_loss < models[j].abs_loss or \
-                 models[i].inv_loss < models[j].inv_loss)):
+                 models[i].inv_loss < models[j].inv_loss or \
+                 models[i].spatial_abs_loss < models[j].spatial_abs_loss)):
+                # models[i].domain_loss <= models[j].domain_loss and \
+                #  models[i].domain_loss < models[j].domain_loss or \
                 
                 models[i].dominated_models.append(models[j])
                 models[j].domination_count += 1
@@ -1567,7 +1691,7 @@ def calculate_crowding_distance(front: List[Tree]):
     # Calculate crowding distance for each objective
     # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node', 'domain_loss']
     # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node']
-    objectives = ['forward_loss', 'inv_loss', 'depth', 'abs_loss']
+    objectives = ['forward_loss', 'inv_loss', 'depth', 'abs_loss', 'spatial_abs_loss']
     
 
     for objective in objectives:
@@ -1708,27 +1832,35 @@ def optimize_population_constants(models: List[Tree], training_data: Union[np.nd
         model.optimize_constants(training_data, max_iter=max_iter)
 
 # set evaluated error for models
-def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndarray, torch.Tensor], epoch: int):
+def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndarray, torch.Tensor], epoch: int, requires_forward_error: bool, requires_inv_error: bool, requires_abs_error: bool, requires_spatial_abs_error: bool):
     """Set evaluated error for models"""
     print("len(models_to_eval):", len(models_to_eval))
     for model in models_to_eval:
         try:
             # Проверяем, нужно ли вычислять инверсную ошибку
-            use_inv_error = epoch % INV_ERROR_EVAL_FREQ == 0 and model.requires_grad #and epoch > 40
-            use_abs_inv_error = epoch % ABS_INV_ERROR_EVAL_FREQ == 0 and REQUIRES_ABS_ERROR #and epoch > 40
-            
+            # use_inv_error = epoch % INV_ERROR_EVAL_FREQ == 0 and model.requires_grad #and epoch > 40
+            use_forward_error = requires_forward_error
+            use_inv_error = epoch % INV_ERROR_EVAL_FREQ == 0 and requires_inv_error #and epoch > 40
+            use_abs_inv_error = epoch % ABS_INV_ERROR_EVAL_FREQ == 0 and requires_abs_error #and epoch > 40
+            use_spatial_abs_inv_error = epoch % SPATIAL_INV_ERROR_EVAL_FREQ == 0 and requires_spatial_abs_error #and epoch > 40
             # Вычисляем ошибку модели
-            model.eval_tree_error(training_data, inv_error=use_inv_error, abs_error=use_abs_inv_error)
+            model.eval_tree_error(training_data, 
+                                  forward_error=use_forward_error,
+                                  inv_error=use_inv_error, 
+                                  abs_error=use_abs_inv_error, 
+                                  spatial_abs_error=use_spatial_abs_inv_error)
             
             # Проверяем валидность результатов
             if np.isnan(model.error) or np.isinf(model.error):
-                print(f"Warning: Model {model.math_expr} depth={model.depth} has invalid error {model.error}")
+                print(f"Warning in set_evaluated_error: Model {model.math_expr} depth={model.depth} has invalid error {model.error}")
                 model.error = float('inf')
                 model.forward_loss = float('inf')
                 if hasattr(model, 'inv_loss'):
                     model.inv_loss = float('inf')
                 if hasattr(model, 'abs_loss'):
                     model.abs_loss = float('inf')
+                if hasattr(model, 'spatial_abs_loss'):
+                    model.spatial_abs_loss = float('inf')
         except Exception as e:
             print(f"Error evaluating model {model.math_expr}: {e}")
             model.error = float('inf')
@@ -1737,25 +1869,28 @@ def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndar
                 model.inv_loss = float('inf')
             if use_abs_inv_error:
                 model.abs_loss = float('inf')
+            if use_spatial_abs_inv_error:
+                model.spatial_abs_loss = float('inf')
 
 def tournament(model1: Tree, model2: Tree):
     """Tournament selection"""
     # Select two random models
-    #num_vars test
     if model1.error < model2.error and \
         model1.depth < model2.depth and \
-        model1.domain_loss < model2.domain_loss and \
         model1.forward_loss < model2.forward_loss and \
         model1.abs_loss < model2.abs_loss and \
-        model1.inv_loss < model2.inv_loss:
+        model1.inv_loss < model2.inv_loss and \
+        model1.spatial_abs_loss < model2.spatial_abs_loss:
+        # model1.domain_loss < model2.domain_loss and \
 
         return model1
     elif model1.error > model2.error and \
         model1.depth > model2.depth and \
-        model1.domain_loss > model2.domain_loss and \
         model1.forward_loss > model2.forward_loss and \
         model1.abs_loss > model2.abs_loss and \
-        model1.inv_loss > model2.inv_loss:
+        model1.inv_loss > model2.inv_loss and \
+        model1.spatial_abs_loss > model2.spatial_abs_loss:
+        # model1.domain_loss > model2.domain_loss and \
         return model2
     else:
 # TODO: if NSGA is used, else compute crowding distance for tournament selection =========================================
@@ -1766,7 +1901,15 @@ def tournament(model1: Tree, model2: Tree):
     
 
 # evolution process with crossover, mutation, and constant optimization(if CONST_OPT is True)
-def evolution(num_of_epochs, models, training_data):
+def evolution(num_of_epochs,
+              models,
+              training_data,
+              population_size, 
+              requires_forward_error, 
+              requires_inv_error, 
+              requires_abs_error, 
+              requires_spatial_abs_error, 
+              desired_functions=None):
     """evolution process with crossover, mutation, and constant optimization"""
     
     # for model in models:
@@ -1786,12 +1929,18 @@ def evolution(num_of_epochs, models, training_data):
 
     # select POPULATION_SIZE models for init population for evolution 
     print("Evaluating models for init population...")
-    set_evaluated_error(models, training_data, 0)
+    set_evaluated_error(models, 
+                        training_data, 
+                        0, 
+                        requires_forward_error, 
+                        requires_inv_error, 
+                        requires_abs_error, 
+                        requires_spatial_abs_error)
     
     print("Selecting models for init population...")
     selection_params = {
-        "population_size": POPULATION_SIZE,
-        "method":          SELECTION_METHOD
+        "population_size": population_size,
+        "method":          SELECTION_METHOD # "NSGA-II" by default
     }
     models = model_selection(models, selection_params)
     # selection_params["population_size"] = NUM_OF_MODELS_TO_SELECT # uncomment if we want to select NUM_OF_MODELS_TO_SELECT models for init population
@@ -1853,7 +2002,7 @@ def evolution(num_of_epochs, models, training_data):
             print(f"Number of unique expressions after crossover: {len(unique_expressions)}")
 
             # Evaluate models (choose variant of evaluation based on requires_grad)
-            set_evaluated_error(models_to_eval, training_data, epoch)
+            set_evaluated_error(models_to_eval, training_data, epoch, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error)
 
             # select the best models
             models_to_eval = model_selection(models_to_eval, selection_params)
@@ -1864,7 +2013,7 @@ def evolution(num_of_epochs, models, training_data):
             for model in models_to_eval:
                 # Try up to 10 times to get a unique expression through mutation
                 for _ in range(10):
-                    mutated_model = mutation(model)
+                    mutated_model = mutation(model, desired_functions)
                     if not CONST_OPT and np.random.uniform() < CONST_MUTATION_PROB:
                         mutated_model = mutation_constant(mutated_model)
                     expr = mutated_model.math_expr
@@ -1920,7 +2069,7 @@ def evolution(num_of_epochs, models, training_data):
             optimize_population_constants(models_to_eval, training_data, max_iter=50)
 
         # Evaluate models (choose variant of evaluation based on requires_grad)
-        set_evaluated_error(models_to_eval, training_data, epoch)
+        set_evaluated_error(models_to_eval, training_data, epoch, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error)
 
         # Best models selection (choose method of selection based on params)
         selected_models = model_selection(models_to_eval, selection_params)
@@ -1946,7 +2095,7 @@ def evolution(num_of_epochs, models, training_data):
             best_rmse = models[0].error
             best_model = safe_deepcopy(models[0])
             print("best_model:", best_model.math_expr, "best_rmse:", best_rmse)
-            print("forward_loss:", best_model.forward_loss, "inv_loss:", best_model.inv_loss, "abs_loss:", best_model.abs_loss, "max_num_of_node:", best_model.max_num_of_node)
+            print("forward_loss:", best_model.forward_loss, "inv_loss:", best_model.inv_loss, "abs_loss:", best_model.abs_loss, "spatial_abs_loss:", best_model.spatial_abs_loss, "max_num_of_node:", best_model.max_num_of_node)
 
         # global min_rmse_loss
         print("min_rmse_loss:", min_rmse_loss)
@@ -1957,26 +2106,34 @@ def evolution(num_of_epochs, models, training_data):
                 print(f"Current best RMSE: {best_rmse:.6f}")
                 print(f"Number of unique expressions: {len(unique_expressions)}")
                 for model in models[:5]:
-                    print(model.math_expr, "depth:", model.depth, "inv_loss:", model.inv_loss, "abs_loss:", model.abs_loss, end="\n")
+                    print(model.math_expr, "depth:", model.depth, "forward_loss:", model.forward_loss, "inv_loss:", model.inv_loss, "abs_loss:", model.abs_loss, "spatial_abs_loss:", model.spatial_abs_loss, end="\n")
                 # quit()
 
         # Print best model and its expression every 10 epochs
         if (epoch + 1) % 10 == 0:
-            print(f"Current best RMSE: {best_rmse:.6f}")
+            print(f"Current best RMSE: {best_rmse:.6f}", )
             print(f"Current mean RMSE: {rmse_stats['mean_rmse']:.6f}")
             print(f"Current median RMSE: {rmse_stats['median_rmse']:.6f}")
             print(f"Number of unique expressions: {len(unique_expressions)}")
             for model in models[:5]:
-                print(model.math_expr, "depth:", model.depth, "inv_loss:", model.inv_loss, "abs_loss:", model.abs_loss, end="\n")
+                print(model.math_expr, "depth:", model.depth, "forward_loss:", model.forward_loss, "inv_loss:", model.inv_loss, "abs_loss:", model.abs_loss, "spatial_abs_loss:", model.spatial_abs_loss, end="\n")
 
     # Store results
     best_model.error_history = mean_rmse_arr
     best_model.min_rmse_loss = min_rmse_loss
     best_model.best_rmse = best_rmse
+
+    stats = {
+        "error_history": mean_rmse_arr,
+        "median_rmse_arr": median_rmse_arr,
+        "best_rmse_arr": best_rmse_arr,
+    }
     
     # Plot error history using the new visualization function
-    from visual import plot_rmse_history
-    plot_rmse_history(mean_rmse_arr, median_rmse_arr, best_rmse_arr)
+    
+    # if not SAVE_RESULTS:
+    #     from visual import plot_rmse_history
+    #     plot_rmse_history(mean_rmse_arr, median_rmse_arr, best_rmse_arr)
     
     # print final results
     print(f"Final min_rmse_loss: {min_rmse_loss}")
@@ -1995,6 +2152,15 @@ def evolution(num_of_epochs, models, training_data):
         print(f"   forward_loss: {model.forward_loss:.6f}")
         print(f"   inv_loss: {getattr(model, 'inv_loss', 0):.6f}")
         print(f"   abs_loss: {getattr(model, 'abs_loss', 0):.6f}")
-        print(f"   domain_loss: {model.domain_loss:.6f}")
+        print(f"   spatial_abs_loss: {getattr(model, 'spatial_abs_loss', 0):.6f}")
+        # print(f"   domain_loss: {model.domain_loss:.6f}")
         print(f"   complexity: {model.max_num_of_node}")
-    return models[0]
+
+    # print("best_model is models[0]", best_model == models[0])
+    # print("best_model.error_history:", best_model.error_history)
+    # print("best_model.min_rmse_loss:", best_model.min_rmse_loss)
+    # print("best_model.best_rmse:", best_model.best_rmse)
+    # print("models[0].error_history:", models[0].error_history)
+    # print("models[0].min_rmse_loss:", models[0].min_rmse_loss)
+    # print("models[0].best_rmse:", models[0].best_rmse)
+    return models[0], stats

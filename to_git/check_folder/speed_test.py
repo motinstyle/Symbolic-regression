@@ -4,6 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 from typing import Union
 from scipy import optimize as opt
+from data_normalization_visualizer import normalize_data
 
 MU = 0.0
 SIGMA = 0.5
@@ -14,15 +15,13 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 
 def check_speed(func, *args, **kwargs):
-    # print(f"Args: {args}")
-    # print(f"Kwargs: {kwargs}")
     start_time = time.time()
     func(*args, **kwargs)
     end_time = time.time()
     return end_time - start_time
 
 def create_random_points(num_of_sets, num_of_points, num_of_features):
-    return SIGMA*np.random.normal(MU, SIGMA, (num_of_sets, num_of_points, num_of_features))
+    return 10*np.random.normal(MU, SIGMA, (num_of_sets, num_of_points, num_of_features))
 
 def create_model_dataset(num_of_sets, num_of_points, num_of_features):
     """
@@ -45,8 +44,13 @@ def create_model_dataset(num_of_sets, num_of_points, num_of_features):
     
     # Apply model function to get clean outputs
     model = lambda x: 3*np.exp(-np.sum(np.square(x+5), axis=-1))
+    # model = lambda x: np.log(np.abs(np.sum(x, axis=-1)))
+    print("X.shape in create_model_dataset:", X.shape)
+    # print(X)
+    # model = lambda x: np.sqrt((x[:, :, 0]) * (x[:, :, 1])) * ((np.exp(-4.855330467224121)) / (np.tan(4.294180870056152)))
     Y = model(X)
-    
+    print("Y.shape in create_model_dataset:", Y.shape)
+
     # Add noise to outputs and reshape to match input format
     Y_noise = Y[..., np.newaxis] + np.random.normal(MU, SIGMA, (num_of_sets, num_of_points, 1))
     
@@ -87,7 +91,7 @@ def visualization_plot_1d(X_data: np.ndarray, y_noise_data: np.ndarray,
 
     # Предсказанные значения
     y_pred = model_func(X_pred)
-    print(min(y_pred), max(y_pred))
+    print("min(y_pred):", min(y_pred), "max(y_pred):", max(y_pred))
     
     # Шумные наблюдения
     plt.scatter(X_data, y_noise_data, color='green', s=40, alpha=0.7, label='Noisy data points')
@@ -97,14 +101,14 @@ def visualization_plot_1d(X_data: np.ndarray, y_noise_data: np.ndarray,
     
     if inv_flag:
         indices = np.where(~((y_noise_data > max(y_pred)) | (y_noise_data < min(y_pred))))[0]
-        print(indices)
+        print("indices in visualization_plot_1d:", indices)
 
         # Соединяем отрезками оригинальные точки и их проекции на кривую
         for i in indices:
             plt.plot([X_data[i], X_pred[i]], [y_noise_data[i], y_pred[i]], 'r-', alpha=0.5)
     else:
         indices = np.arange(len(X_data))
-        print(indices)
+        print("indices in visualization_plot_1d:", indices)
         # Соединяем отрезками оригинальные точки и их проекции на кривую
         for i in indices:
             plt.plot([X_data[i], X_pred[i]], [y_noise_data[i], y_pred[i]], 'r-', alpha=0.5)
@@ -312,6 +316,15 @@ def model_2d(x):
             return x[:, 0]**2 + x[:, 1]**2
         else:
             raise ValueError(f"Неподдерживаемая размерность массива: {x.ndim}")
+def model_2d_atan(x):
+    """
+    Модельная функция для двумерных данных: x[0]^2 + x[1]^2
+    Корректно обрабатывает как torch.Tensor, так и np.ndarray разной размерности
+    """
+
+    # print(f"x: {x}")
+
+    return torch.atan(x[0] / (x[1] + 1))
 
 # print(check_speed(create_random_points, 10, 1000, 2))
 
@@ -417,14 +430,53 @@ def eval_inv_error_torch(data: torch.Tensor, model: callable, steps=100, lr=1e-1
     # Подготавливаем данные - переносим на нужное устройство
     data = data.clone().detach().requires_grad_(True).to(device)
 
+    print("data shape:", data.shape)
+    print("data:", data)
+
+    mean_x = data[:, :-1].mean(dim=0)
+    std_x = data[:, :-1].std(dim=0)
+    std_x[std_x == 0] = 1.0  # Avoid division by zero
+    data[:, :-1] = (data[:, :-1] - mean_x) / std_x
+    
+    # mean_y = data[:, -1].mean(dim=0)
+    # std_y = data[:, -1].std(dim=0)
+    # std_y[std_y == 0] = 1.0  # Avoid division by zero
+    # data[:, -1] = (data[:, -1] - mean_y) / std_y
+
+
+    # print("data shape:", data.shape)
+    # divider = torch.max(torch.abs(data[:, :-1]), dim=0).values
+    # print("divider:", divider)
+    # data[:, :-1] = data[:, :-1] / divider
+    # print("data shape:", data.shape)
+
     # Разделяем входные и выходные данные
     X_orig = data[:, :-1].clone().detach()
     y_target = data[:, -1].clone().detach()
 
+    print("X_orig shape:", X_orig.shape)
+    print("y_target shape:", y_target.shape)
+
+    # mean_x = X_orig.mean(dim=0)
+    # std_x = X_orig.std(dim=0)
+    # std_x[std_x == 0] = 1.0  # Avoid division by zero
+    # X_orig = (X_orig - mean_x) / std_x
+
+    print("X_orig shape after normalization:", X_orig.shape)
+    print("X_orig:", X_orig)
+    
+    # mean_y = y_target.mean(dim=0)
+    # std_y = y_target.std(dim=0)
+    # std_y[std_y == 0] = 1.0  # Avoid division by zero
+    # y_target = (y_target - mean_y) / std_y
+
+    print("y_target shape after normalization:", y_target.shape)
+    print("y_target:", y_target)
+
     # Определяем допустимую ошибку и максимальную ошибку
     data_limits = X_orig.max(dim=0).values - X_orig.min(dim=0).values
-    tolerance = 0.01*data_limits[-1]
-    max_error = torch.sqrt(torch.sum(data_limits[:-1]**2)).item() # max error possible for this dataset on input space
+    tolerance = 0.01 * (y_target.max() - y_target.min())
+    max_error = torch.norm(data_limits).item() # max error possible for this dataset on input space
 
     y_pred = model(X_orig)
 
@@ -433,12 +485,16 @@ def eval_inv_error_torch(data: torch.Tensor, model: callable, steps=100, lr=1e-1
     X_optim = X_orig[mask_in_range]
     X_optim = X_optim.clone().detach().requires_grad_(True)
     # X_optim = X_orig[mask_in_range].clone().detach().requires_grad_(True)
-    # X_optim = X_orig[mask_in_range].clone().detach().re
     y_target = y_target[mask_in_range]
 
     # Создаем оптимизатор
     # optimizer = torch.optim.SGD([X_optim], lr=lr)
     optimizer = torch.optim.Adam([X_optim], lr=lr)
+
+    print("X_optim.shape:", X_optim.shape)
+    print("y_target.shape:", y_target.shape)
+    print("X_orig.shape:", X_orig.shape)
+    print("how much in range:", mask_in_range.sum().item())
 
     # Выполняем оптимизацию
     for _ in range(steps):
@@ -446,13 +502,17 @@ def eval_inv_error_torch(data: torch.Tensor, model: callable, steps=100, lr=1e-1
         
         # Вычисляем предсказания модели
         y_pred = model(X_optim)
+        print("y_pred.shape:", y_pred.shape)
+        print("y_pred:", y_pred)
+        print("y_target:", y_target)
+
         
         # Убеждаемся, что выходы на том же устройстве, что и целевые значения
         if y_pred.device != y_target.device:
             y_pred = y_pred.to(device)
             
         # Вычисляем функцию потерь
-
+        # print("y_pred.shape:", y_pred.shape, "y_target.shape", y_target.shape)
         loss = torch.mean((y_pred - y_target) ** 2)
         # loss = torch.mean(torch.abs(y_pred - y_target))
         # loss = torch.mean((y_pred - y_target) ** 2) - 0.1*torch.mean(torch.abs(X_optim - X_orig[mask_in_range]))
@@ -493,6 +553,8 @@ def eval_inv_error_torch(data: torch.Tensor, model: callable, steps=100, lr=1e-1
         # print(f"Неудачных оптимизаций: {failed}/{total} ({failed/total*100:.1f}%)")
         # print(error)
         
+        # X_optim *= divider
+        X_orig = X_orig * std_x + mean_x
         X_orig[mask_in_range] = X_optim
 
         # Возвращаем среднюю ошибку, оптимизированные входы и их выходы
@@ -961,14 +1023,17 @@ def main():
     # # visualization_plot_1d(X_data, y_data, X_pred_torch_first, model_1d)
     # # visualization_plot_1d(X_data, y_data, X_pred_scipy, model_1d)
 
-    data = create_model_dataset(num_of_sets=1, num_of_points=100, num_of_features=num_of_features_1d)
+    # data = create_model_dataset(num_of_sets=1, num_of_points=100, num_of_features=num_of_features_1d)
+    # data = create_model_dataset(num_of_sets=1, num_of_points=100, num_of_features=num_of_features_2d)
+    data = create_random_points(num_of_sets=1, num_of_points=100, num_of_features=num_of_features_1d)
     # print(data.shape)
     # visualisation_data(data[0])
     data_torch = torch.tensor(data, dtype=torch.float32)
-    rmse_torch, X_pred_torch = eval_inv_error_torch(data_torch[0], model_1d_2)
-    visualization_plot_1d(data[0][:, :-1], data[0][:, -1], X_pred_torch, model_1d_2, inv_flag=True)
-    # rmse_torch, X_pred_torch = eval_abs_inv_error_torch(data_torch[0], model_1d)
-    # visualization_plot_1d(data[0][:, :-1], data[0][:, -1], X_pred_torch, model_1d, inv_flag=False)
+    # rmse_torch, X_pred_torch = eval_inv_error_torch(data_torch[0], model_1d)
+    # print("X_pred_torch.shape:", X_pred_torch.shape)
+    # visualization_plot_1d(data[0][:, :-1], data[0][:, -1], X_pred_torch, model_1d, inv_flag=True)
+    rmse_torch, X_pred_torch = eval_abs_inv_error_torch(data_torch[0], model_1d)
+    visualization_plot_1d(data[0][:, :-1], data[0][:, -1], X_pred_torch, model_1d, inv_flag=False)
     print(f"RMSE torch: {rmse_torch}")
 
     # write code here

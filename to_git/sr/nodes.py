@@ -35,13 +35,13 @@ def const_(const):
     """Convert input to tensor if needed"""
     if not torch.is_tensor(const):
         const = torch.tensor(const, dtype=torch.float32)
-    return const
+    return torch.clamp(const, -MAX_VALUE, MAX_VALUE)
 
 def ident_(x):
     """Identity function that ensures tensor output"""
     if not torch.is_tensor(x):
         x = torch.tensor(x, dtype=torch.float32)
-    return x
+    return torch.clamp(x, -MAX_VALUE, MAX_VALUE)
 
 def neg_(x):
     """Vectorized negation with value capping"""
@@ -92,6 +92,7 @@ def cos_(x):
 #     # result = torch.where(power < 0, 1.0 / (result + EPSILON), result)
     
 #     return torch.clamp(safe_x**power, -MAX_VALUE, MAX_VALUE)
+
 def pow2_(x):
     """Vectorized power with handling of negative powers"""
     return torch.clamp(x**2, -MAX_VALUE, MAX_VALUE)
@@ -102,7 +103,7 @@ def pow3_(x):
 
 def abs_(x):
     """Vectorized absolute value"""
-    return torch.abs(x)
+    return torch.clamp(torch.abs(x), -MAX_VALUE, MAX_VALUE)
 
 def log_(x):
     """Vectorized natural logarithm with handling of negative/zero inputs"""
