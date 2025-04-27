@@ -77,7 +77,7 @@ INV_ERROR_COEF = 0.7
 MAX_DEPTH = 4
 
 # fixed seed
-FIXED_SEED = None # 3
+FIXED_SEED = 42 # 3
 if FIXED_SEED is not None:
     import numpy as np
     import torch

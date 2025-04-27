@@ -7,7 +7,7 @@ import time
 import argparse
 
 from nodes import FUNCTIONS, FunctionCategory, get_functions_by_category, get_functions_by_parity, to_tensor
-from visual import plot_results, plot_rmse_history
+from visual import plot_results, plot_loss_history
 from sr_tree import *
 from parameters import *
 
@@ -21,7 +21,17 @@ def parse_arguments():
     parser.add_argument('--function', type=str, default=None,
                         help='Specific function to test (if omitted, all functions in the directory will be tested)')
     
-    # Algorithm parameters
+    # Function selection parameters
+    parser.add_argument('--use_functions', type=str, default=None,
+                        help='Comma-separated list of function names to use (e.g., "sum_,mult_,sin_,cos_"). If not specified, all functions will be used')
+    parser.add_argument('--list_functions', action='store_true', 
+                        help='List all available functions and exit')
+    
+    # Save results parameters
+    parser.add_argument('--save_results', action='store_true', default=SAVE_RESULTS,
+                        help='Save results instead of displaying them')
+    
+    # Evolutionary algorithm parameters
     parser.add_argument('--epochs', type=int, default=NUM_OF_EPOCHS,
                         help=f'Number of epochs (default: {NUM_OF_EPOCHS})')
     parser.add_argument('--start_population_size', type=int, default=NUM_OF_START_MODELS,
@@ -32,10 +42,14 @@ def parse_arguments():
                         help=f'Mutation probability (default: {MUTATION_PROB})')
     parser.add_argument('--max_depth', type=int, default=MAX_DEPTH,
                         help=f'Maximum tree depth (default: {MAX_DEPTH})')
-    parser.add_argument('--requires_grad', action='store_true', default=REQUIRES_GRAD,
-                        help='Enable gradient computation')
     parser.add_argument('--runs', type=int, default=NUM_OF_RUNS,
                         help=f'Number of independent runs (default: {NUM_OF_RUNS})')
+    parser.add_argument('--seed', type=int, default=FIXED_SEED,
+                        help=f'Random seed (default: {FIXED_SEED})')
+    
+    # Error computation parameters
+    parser.add_argument('--requires_grad', action='store_true', default=REQUIRES_GRAD,
+                        help='Enable gradient computation')
     parser.add_argument('--requires_forward_error', action='store_true', default=REQUIRES_FORWARD_ERROR,
                         help='Enable forward error computation')
     parser.add_argument('--requires_inv_error', action='store_true', default=REQUIRES_INV_ERROR,
@@ -44,16 +58,6 @@ def parse_arguments():
                         help='Enable absolute inverse error computation')
     parser.add_argument('--requires_spatial_abs_inv_error', action='store_true', default=REQUIRES_SPATIAL_ABS_ERROR,
                         help='Enable spatial absolute inverse error computation')
-    
-    # Function selection parameters
-    parser.add_argument('--use_functions', type=str, default=None,
-                        help='Comma-separated list of function names to use (e.g., "sum_,mult_,sin_,cos_"). If not specified, all functions will be used')
-    parser.add_argument('--list_functions', action='store_true', 
-                        help='List all available functions and exit')
-    
-    # Save results parameters
-    parser.add_argument('--save_results', action='store_true', default=SAVE_RESULTS,
-                        help='Save results instead of displaying them')
     
     return parser.parse_args()
 
@@ -528,8 +532,15 @@ def create_diverse_population(
     return population, stats
 
 # save model results to files, including plots and expressions
-def save_model_results(model: Tree, X_data: np.ndarray, Y_data: np.ndarray, Y_pred: np.ndarray, 
-                      target_func: str = None, rmse_stats: dict = None, var_stats: PopulationStats = None, args: dict = None, time_taken: float = 0):
+def save_model_results(model: Tree, 
+                       X_data: np.ndarray, 
+                       Y_data: np.ndarray, 
+                       Y_pred: np.ndarray, 
+                       target_func: str = None, 
+                       rmse_stats: dict = None, 
+                       var_stats: PopulationStats = None, 
+                       args: dict = None, 
+                       time_taken: float = 0):
     """
     Save model results to files, including plots and expressions.
     
@@ -540,16 +551,45 @@ def save_model_results(model: Tree, X_data: np.ndarray, Y_data: np.ndarray, Y_pr
         Y_pred: Predicted output data
         target_func: String representation of the target function (if known)
     """
-    from datetime import datetime
+    # from datetime import datetime
     
     # Create results directory if it doesn't exist
     results_dir = os.path.join(os.path.dirname(__file__), '..', 'results')
+    print(f"results_dir: {results_dir}")
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
     
+    dataset_name = args.data_dir
+    # Extract just the base directory name instead of using the full path
+    if dataset_name is not None:
+        dataset_name = os.path.basename(dataset_name.rstrip('/\\'))
+    if dataset_name is None or dataset_name == "":
+        dataset_name = "unknown_dataset"
+    
+    # print(f"dataset_name: {dataset_name}")
+    # print(f"vars(args): {vars(args)}")
+    func_name = args.function
+    if func_name is None:
+        func_name = target_func
+    error_names = ["requires_forward_error", "requires_inv_error", "requires_abs_inv_error", "requires_spatial_abs_inv_error"]
+    error_names_compressed = ["forward", "inv", "abs", "spatial_abs"]
+    error_name_str = ""
+    for i, error_name in enumerate(error_names):
+        if vars(args)[error_name]:
+            error_name_str += error_names_compressed[i] + "_"
+    if error_name_str == "":
+        error_name_str = "unknown_error"
+    seed = args.seed
+    if seed is None:
+        seed = "unknown_seed"
+    run_name = f"{dataset_name}__{func_name}__{error_name_str}_{seed}"
+    if run_name in os.listdir(results_dir):
+        run_name = f"{run_name}__{time.strftime('%Y%m%d_%H%M%S')}"
     # Create timestamp-based subdirectory
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = os.path.join(results_dir, f'run_{timestamp}')
+    # timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = os.path.join(results_dir, f'{run_name}')
+    # print(f"run_dir: {run_dir}")
+    # quit()
     os.makedirs(run_dir)
     
     # Save model information to text file with UTF-8 encoding
@@ -640,13 +680,18 @@ def save_model_results(model: Tree, X_data: np.ndarray, Y_data: np.ndarray, Y_pr
         fig_results = plot_results(X_data, Y_data, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {model.math_expr}", return_plot=True)
     elif X_data.shape[1] == 2:
         fig_results = plot_results(X_data, Y_data, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {model.math_expr}", return_plot=True)
-    fig_rmse = plot_rmse_history(rmse_stats['error_history'], rmse_stats['median_rmse_arr'], rmse_stats['best_rmse_arr'], return_plot=True)
+    figs_rmse = plot_loss_history(rmse_stats, return_plot=True)
     fig_var = var_stats.plot_stats(return_plot=True)
+    
+    for i, fig in enumerate(figs_rmse):
+        fig.savefig(os.path.join(run_dir, f'rmse_history_{i}.png'), dpi=300, bbox_inches='tight')
+
     fig_results.savefig(os.path.join(run_dir, 'results.png'), dpi=300, bbox_inches='tight')
-    fig_rmse.savefig(os.path.join(run_dir, 'rmse_history.png'), dpi=300, bbox_inches='tight')
     fig_var.savefig(os.path.join(run_dir, 'var_stats.png'), dpi=300, bbox_inches='tight')
+    
+    for i, fig in enumerate(figs_rmse):
+        plt.close(fig)
     plt.close(fig_results)
-    plt.close(fig_rmse)
     plt.close(fig_var)
 
 # run evolutionary algorithm with function filtering
@@ -669,6 +714,13 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     """Run the evolutionary algorithm with the given parameters"""
 
     start_time = time.time()
+
+    # print(f"args: {args}")
+    # quit()
+
+    if args.seed is not None:
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
 
     # Convert inputs to PyTorch tensors
     if isinstance(X_data, np.ndarray):
@@ -733,7 +785,7 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
             plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}", return_plot=False)
         elif X_plot.shape[1] == 2:
             plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}", return_plot=False)
-        plot_rmse_history(rmse_stats['error_history'], rmse_stats['median_rmse_arr'], rmse_stats['best_rmse_arr'], return_plot=False) 
+        plot_loss_history(rmse_stats, return_plot=False) 
     
     # Print the final model
     # print("\nFinal Model:")
@@ -776,7 +828,7 @@ if __name__ == "__main__":
     # print(args.list_functions)
     # print(type(args))
     # quit()
-    
+
     # If --list_functions is specified, display available functions and exit
     if args.list_functions:
         display_available_functions()
@@ -797,10 +849,15 @@ if __name__ == "__main__":
         
         for func_name, data in data_list:
             print(f"\nProcessing function: {func_name}")
-            if args.runs > 1 and not FIXED_SEED:
+            if args.runs > 1:
                 models = []
                 for i in range(args.runs):
                     print(f"\nRun {i+1}/{args.runs}")
+                    
+                    # set seed for each run seed = run_number
+                    if args.seed != FIXED_SEED:
+                        args.seed = i
+                    
                     model = run_evolution(
                         data.iloc[:, :-1].values, 
                         data.iloc[:, -1].values,

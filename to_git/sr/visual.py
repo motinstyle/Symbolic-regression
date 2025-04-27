@@ -95,57 +95,131 @@ def plot_results(X, y_true, y_pred, title="Model Comparison", return_plot: bool 
         plt.show()
 
 
-def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse: np.ndarray, title: str = "Training Error History", return_plot: bool = False):
+# def plot_rmse_history(mean_rmse: np.ndarray, median_rmse: np.ndarray, best_rmse: np.ndarray, title: str = "Training Error History", return_plot: bool = False):
+#     """
+#     Plot RMSE statistics history in three subplots.
+    
+#     Args:
+#         mean_rmse: Array of mean RMSE values over epochs
+#         median_rmse: Array of median RMSE values over epochs
+#         best_rmse: Array of best RMSE values over epochs
+#         title: Title for the overall figure
+        
+#     Returns:
+#         fig: Matplotlib figure object
+#     """
+
+#     fig = plt.figure(figsize=(15, 5))
+    
+#     # Mean RMSE subplot
+#     plt.subplot(131)
+#     plt.plot(mean_rmse, 'b-', label='Mean RMSE')
+#     plt.title('Mean RMSE History')
+#     plt.xlabel('Epoch')
+#     plt.ylabel('RMSE')
+#     plt.grid(True)
+#     plt.yscale('log')
+#     plt.legend()
+    
+#     # Median RMSE subplot
+#     plt.subplot(132)
+#     plt.plot(median_rmse, 'g-', label='Median RMSE')
+#     plt.title('Median RMSE History')
+#     plt.xlabel('Epoch')
+#     plt.ylabel('RMSE')
+#     plt.grid(True)
+#     plt.yscale('log')
+#     plt.legend()
+    
+#     # Best RMSE subplot
+#     plt.subplot(133)
+#     plt.plot(best_rmse, 'r-', label='Best RMSE')
+#     plt.title('Best RMSE History')
+#     plt.xlabel('Epoch')
+#     plt.ylabel('RMSE')
+#     plt.grid(True)
+#     plt.yscale('log')
+#     plt.legend()
+    
+#     plt.suptitle(title)
+#     plt.tight_layout()
+#     if return_plot:
+#         return fig
+#     else:
+#         plt.show()
+def plot_loss_history(rmse_stats: dict, return_plot: bool = False):
     """
-    Plot RMSE statistics history in three subplots.
+    Plot error (sum_of_losses=error, forward_loss, inv_loss, abs_loss, spatial_abs_loss) statistics history in three subplots.
     
     Args:
-        mean_rmse: Array of mean RMSE values over epochs
-        median_rmse: Array of median RMSE values over epochs
-        best_rmse: Array of best RMSE values over epochs
+        rmse_stats: Dictionary of error statistics
         title: Title for the overall figure
         
     Returns:
-        fig: Matplotlib figure object
+        figs: List of Matplotlib figure objects
     """
-    fig = plt.figure(figsize=(15, 5))
-    
-    # Mean RMSE subplot
-    plt.subplot(131)
-    plt.plot(mean_rmse, 'b-', label='Mean RMSE')
-    plt.title('Mean RMSE History')
-    plt.xlabel('Epoch')
-    plt.ylabel('RMSE')
-    plt.grid(True)
-    plt.yscale('log')
-    plt.legend()
-    
-    # Median RMSE subplot
-    plt.subplot(132)
-    plt.plot(median_rmse, 'g-', label='Median RMSE')
-    plt.title('Median RMSE History')
-    plt.xlabel('Epoch')
-    plt.ylabel('RMSE')
-    plt.grid(True)
-    plt.yscale('log')
-    plt.legend()
-    
-    # Best RMSE subplot
-    plt.subplot(133)
-    plt.plot(best_rmse, 'r-', label='Best RMSE')
-    plt.title('Best RMSE History')
-    plt.xlabel('Epoch')
-    plt.ylabel('RMSE')
-    plt.grid(True)
-    plt.yscale('log')
-    plt.legend()
-    
-    plt.suptitle(title)
-    plt.tight_layout()
-    if return_plot:
-        return fig
-    else:
-        plt.show()
+
+    keys = list(rmse_stats.keys())
+    figs = []
+
+    for i in range(0, len(keys), 3):
+        if rmse_stats[keys[i]] is None:
+            continue
+        mean = rmse_stats[keys[i]]
+        median = rmse_stats[keys[i+1]]
+        best = rmse_stats[keys[i+2]]
+
+        # Replace non-positive values with small positive number
+        mean[mean <= 0] = 1e-6
+        median[median <= 0] = 1e-6
+        best[best <= 0] = 1e-6
+
+        type_name = keys[i].split('_')[1]
+        type_name = type_name[0].upper() + type_name[1:]
+        if type_name == 'Error':
+            type_name = 'Sum of losses'
+        title = f'{type_name} loss statistics'
+
+        fig = plt.figure(figsize=(15, 5))
+        
+        # Mean loss subplot
+        plt.subplot(131)
+        plt.plot(mean, 'b-', label=f'Mean {type_name} loss' if type_name != 'Sum of losses' else f'Mean {type_name}')
+        plt.title(f'Mean {type_name} loss')
+        plt.xlabel('Epoch')
+        plt.ylabel(f'{type_name} loss')
+        plt.grid(True)
+        plt.yscale('log')
+        plt.legend()
+        
+        # Median loss subplot
+        plt.subplot(132)
+        plt.plot(median, 'g-', label=f'Median {type_name} loss' if type_name != 'Sum of losses' else f'Median {type_name}')
+        plt.title(f'Median {type_name} loss')
+        plt.xlabel('Epoch')
+        plt.ylabel(f'{type_name} loss')
+        plt.grid(True)
+        plt.yscale('log')
+        plt.legend()
+        
+        # Best loss subplot
+        plt.subplot(133)
+        plt.plot(best, 'r-', label=f'Best {type_name} loss' if type_name != 'Sum of losses' else f'Best {type_name}')
+        plt.title(f'Best {type_name} loss')
+        plt.xlabel('Epoch')
+        plt.ylabel(f'{type_name} loss')
+        plt.grid(True)
+        plt.yscale('log')
+        plt.legend()
+        
+        plt.suptitle(title)
+        plt.tight_layout()
+        if return_plot:
+            figs.append(fig)
+        else:
+            # figs.append(fig)
+            plt.show()
+    return figs
 
 
 def plot_2d_scatter(X, y, title: str = "Scatter Plot"):
