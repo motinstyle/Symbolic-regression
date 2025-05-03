@@ -6,7 +6,8 @@ import os
 def polynomial(x): return 3.2 * x**2 - 2.7 * x + 5.3  # f1
 def sin_plus_x(x): return 2.1*np.sin(1.2*x) + 0.5 * x   # f2
 def rational_func(x): return (3.2*x**2 + 4.4) / (1.5*x**2 + 8.1)  # f3
-def atan_plus_x(x): return np.arctan(2.3 * x) + 1.3*x  # f4
+# def atan_plus_x(x): return np.arctan(2.3 * x) + 1.3*x  # f4
+def atan_plus_x(x): return np.arctan(2.3 * x) + 0.7*x  # f4
 
 # ℝ²→ℝ с более описательными именами
 def quad_surface(x, y): return 0.9*x**2 + 1.3*y**2 + 0.5*x*y - 1.5  # f5
@@ -17,27 +18,28 @@ def atan_div(x, y): return 1.7*np.arctan(3.3*x / (2.5*y + 1.7))  # f8
 # exponents
 def sin_times_exp_2d(x, y): return np.sin(x) * np.exp(-y)  # f9
 def gaussian_2d(x, y): return np.exp(-(x**2 + y**2))  # f10
-def exp_times_sin_1d(x): return np.exp(-0.5*x) * np.sin(5*x)  # f11
+def exp_times_sin_1d(x): return np.exp(-0.5*x) * np.sin(3.3*x)  # f11
+# def exp_times_sin_1d(x): return np.exp(-0.5*x) * np.sin(5*x)  # f11
 
 # Интервалы для генерации данных (оставлены без изменений)
 ranges_1d = {
-    'polynomial': (-100, 100),
-    'sin_plus_x': (-30, 30),
-    'rational_func': (0, 10),
-    'atan_plus_x': (-20, 20),
+    'polynomial': (-5, 6),
+    'sin_plus_x': (-10, 10),
+    'rational_func': (-6, 6),
+    'atan_plus_x': (-5, 5),
 }
 
 ranges_2d = {
-    'quad_surface': (-100, 100),
-    'parallel': (0, 10),
-    'power_diff': (-10, 10),
-    'atan_div': (-10, 10),
+    'quad_surface': (-5, 5),
+    'parallel': (1e-3, 10),
+    'power_diff': (-3, 3),
+    'atan_div': (-6, 6),
 }
 
 ranges_exp = {
-    'sin_times_exp_2d': (-5, 5),
+    'sin_times_exp_2d': ((-6, 6), (-3, 3)),
     'gaussian_2d': (-3, 3),
-    'exp_times_sin_1d': (0, 10),
+    'exp_times_sin_1d': (-5, 5),
 }
 
 # Количество сэмплов
@@ -64,7 +66,7 @@ def sample_2d(func, name, x_range, y_range=None):
     return pd.DataFrame({'x': xx.ravel(), 'y': yy.ravel(), 'output': zz.ravel()})
 
 # Функция для сохранения датафреймов в CSV
-def save_dataframes_to_csv(dataframes_dict, output_dir='datasets_bc'):
+def save_dataframes_to_csv(dataframes_dict, output_dir='datasets_bc_new'):
     # Создаем директорию, если она не существует
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -92,7 +94,7 @@ dfs_2d = {
 }
 
 dfs_exp = {
-    'sin_times_exp_2d': sample_2d(sin_times_exp_2d, 'sin_times_exp_2d', *([ranges_exp['sin_times_exp_2d']]*2)),
+    'sin_times_exp_2d': sample_2d(sin_times_exp_2d, 'sin_times_exp_2d', *([ranges_exp['sin_times_exp_2d'][0]]*2, [ranges_exp['sin_times_exp_2d'][1]])),
     'gaussian_2d': sample_2d(gaussian_2d, 'gaussian_2d', *([ranges_exp['gaussian_2d']]*2)),
     'exp_times_sin_1d': sample_1d(exp_times_sin_1d, 'exp_times_sin_1d', ranges_exp['exp_times_sin_1d']),
 }
@@ -109,6 +111,6 @@ for name, df in all_dfs.items():
     print(df.head())
 
 # Сохранение датафреймов в CSV файлы
-save_dataframes_to_csv(all_dfs, output_dir='datasets_bc')
+save_dataframes_to_csv(all_dfs, output_dir='datasets_bc_new')
 
-print("\nВсе датасеты успешно созданы и сохранены в директорию datasets_bc/")
+print("\nВсе датасеты успешно созданы и сохранены в директорию datasets_bc_new/")

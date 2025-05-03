@@ -16,7 +16,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Symbolic Regression using evolutionary algorithms')
     
     # Dataset arguments
-    parser.add_argument('--data_dir', type=str, default="../new_datasets", 
+    parser.add_argument('--data_dir', type=str, default="../datasets_bc", 
                         help='Directory containing dataset CSV files')
     parser.add_argument('--function', type=str, default=None,
                         help='Specific function to test (if omitted, all functions in the directory will be tested)')
@@ -550,6 +550,10 @@ def save_model_results(model: Tree,
         Y_data: True output data
         Y_pred: Predicted output data
         target_func: String representation of the target function (if known)
+        rmse_stats: RMSE statistics
+        var_stats: Distribution of functions and variables/constants
+        args: Input arguments
+        time_taken: Time taken to train the model
     """
     # from datetime import datetime
     
@@ -681,6 +685,66 @@ def save_model_results(model: Tree,
     elif X_data.shape[1] == 2:
         fig_results = plot_results(X_data, Y_data, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {model.math_expr}", return_plot=True)
     figs_rmse = plot_loss_history(rmse_stats, return_plot=True)
+
+    # save rmse_stats to file
+    with open(os.path.join(run_dir, 'rmse_stats.csv'), 'w', encoding='utf-8') as f:
+        # Write header
+        header = ['Epoch']
+        if rmse_stats['mean_error_arr'] is not None:
+            header.extend(['Mean Error', 'Median Error', 'Best Error'])
+        if rmse_stats['mean_forward_loss_arr'] is not None:
+            header.extend(['Mean Forward Loss', 'Median Forward Loss', 'Best Forward Loss'])
+        if rmse_stats['mean_inv_loss_arr'] is not None:
+            header.extend(['Mean Inverse Loss', 'Median Inverse Loss', 'Best Inverse Loss'])
+        if rmse_stats['mean_abs_loss_arr'] is not None:
+            header.extend(['Mean Absolute Loss', 'Median Absolute Loss', 'Best Absolute Loss'])
+        if rmse_stats['mean_spatial_abs_loss_arr'] is not None:
+            header.extend(['Mean Spatial Absolute Loss', 'Median Spatial Absolute Loss', 'Best Spatial Absolute Loss'])
+        
+        f.write(','.join(header) + '\n')
+        
+        # Write data rows
+        num_epochs = len(rmse_stats['mean_error_arr'])
+        for epoch in range(num_epochs):
+            row = [str(epoch)]
+            
+            if rmse_stats['mean_error_arr'] is not None:
+                row.extend([
+                    str(rmse_stats['mean_error_arr'][epoch]),
+                    str(rmse_stats['median_error_arr'][epoch]),
+                    str(rmse_stats['best_error_arr'][epoch])
+                ])
+            
+            if rmse_stats['mean_forward_loss_arr'] is not None:
+                row.extend([
+                    str(rmse_stats['mean_forward_loss_arr'][epoch]),
+                    str(rmse_stats['median_forward_loss_arr'][epoch]),
+                    str(rmse_stats['best_forward_loss_arr'][epoch])
+                ])
+            
+            if rmse_stats['mean_inv_loss_arr'] is not None:
+                row.extend([
+                    str(rmse_stats['mean_inv_loss_arr'][epoch]),
+                    str(rmse_stats['median_inv_loss_arr'][epoch]),
+                    str(rmse_stats['best_inv_loss_arr'][epoch])
+                ])
+            
+            if rmse_stats['mean_abs_loss_arr'] is not None:
+                row.extend([
+                    str(rmse_stats['mean_abs_loss_arr'][epoch]),
+                    str(rmse_stats['median_abs_loss_arr'][epoch]),
+                    str(rmse_stats['best_abs_loss_arr'][epoch])
+                ])
+            
+            if rmse_stats['mean_spatial_abs_loss_arr'] is not None:
+                row.extend([
+                    str(rmse_stats['mean_spatial_abs_loss_arr'][epoch]),
+                    str(rmse_stats['median_spatial_abs_loss_arr'][epoch]),
+                    str(rmse_stats['best_spatial_abs_loss_arr'][epoch])
+                ])
+            
+            f.write(','.join(row) + '\n')
+
     fig_var = var_stats.plot_stats(return_plot=True)
     
     for i, fig in enumerate(figs_rmse):

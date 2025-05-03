@@ -552,7 +552,8 @@ class Tree:
                 # y_pred = self.forward(X)
 
                 # Calculate forward_loss in any case (RMSE)
-                forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+                # forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+                forward_loss = torch.mean((y_pred - y_true) ** 2).item()
                 if np.isinf(self.forward_loss):
                     print("forward_loss is inf for model:", self.to_math_expr())
                 elif np.isnan(self.forward_loss):
@@ -564,6 +565,7 @@ class Tree:
                 # Calculate inversion error only if it's required
                 # total_inv_loss = self.eval_inv_error(data)
                 total_inv_loss = self.eval_inv_error_torch(data)
+                # print(f"got total_inv_loss = {total_inv_loss} for model: {self.to_math_expr()}")
                 if np.isinf(total_inv_loss):
                     print("total_inv_loss is inf for model:", self.to_math_expr())
                 elif np.isnan(total_inv_loss):
@@ -575,6 +577,7 @@ class Tree:
                 # print("y_pred.type():", y_pred.type())
                 # print("y_pred.dim():", y_pred.dim())           
                 predicted_limits = torch.clamp(torch.max(y_pred) - torch.min(y_pred), -MAX_VALUE, MAX_VALUE)
+                
                 # print("predicted_limits:", predicted_limits)
                 # print("predicted_limits.dim() in eval_tree_error:", predicted_limits.dim())
                 # print("predicted_limits.type() in eval_tree_error:", predicted_limits.type())
@@ -767,9 +770,8 @@ class Tree:
     def eval_inv_error_torch(self, data: Union[np.ndarray, torch.Tensor], steps=50, lr=0.001) -> float:
         """
         Evaluate inverse error using PyTorch optimization.
-        Hybrid initialization:
-        - If X_orig predicts well -> start from X_orig
-        - Else -> start from zeros (center of allowed region)
+        Measures how well inputs can be recovered from outputs using inverse modeling.
+        Adds checks for gradient sensitivity and model flatness.
         """
 
         if self.inv_loss > 0:
@@ -782,61 +784,62 @@ class Tree:
         else:
             data = data.clone().detach().to(device)
 
-        # mean_x = data[:, :-1].mean(dim=0)
-        # std_x = data[:, :-1].std(dim=0)
-        # std_x[std_x == 0] = 1.0  # Avoid division by zero
-        # data[:, :-1] = (data[:, :-1] - mean_x) / std_x
-
-        # mean_y = data[:, -1].mean(dim=0)
-        # std_y = data[:, -1].std(dim=0)
-        # std_y[std_y == 0] = 1.0  # Avoid division by zero
-        # data[:, -1] = (data[:, -1] - mean_y) / std_y
-
-        # plot_scatter(data[:, :-1].to("cpu").numpy(), data[:, -1].to("cpu").numpy())
-
         X_data = data[:, :-1].clone().detach()
         y_target = data[:, -1].clone().detach()
 
-        # Compute data limits
         data_limits = X_data.max(dim=0).values - X_data.min(dim=0).values
         tolerance = 0.01 * (y_target.max() - y_target.min())
-        max_error = torch.norm(data_limits).item()
+        max_error = (torch.norm(data_limits).item())**2
 
-        # If tree is constant, return max error
-        if self.depth == 0:
+        # Return max_error if the model is constant
+        if self.depth == 0 or self.is_constant_node(self.start_node):
+            print(f"Tree {self.to_math_expr()} is constant, returning max_error = {max_error}")
             return max_error
 
         y_pred_full = self.forward(X_data.to("cpu")).to(device)
 
-        # plot_results(X_data.to("cpu").numpy(), y_target.to("cpu").numpy(), y_pred_full.to("cpu").numpy().flatten(), "Initial comparison")
-        
-        # try:
-        #     plot_scatter(X_data.to("cpu").numpy(), y_pred_full.to("cpu").numpy().flatten(), "Initial")
-        # except Exception as e:
-        #     print(f"Error plotting scatter: {e}")
-        # quit()        
-        
-        # Создаем маску с правильной формой
-        mask_in_range = (y_target >= y_pred_full.min()) & (y_target <= y_pred_full.max())
-
-        # If all points are outside the range, return max error
-        if mask_in_range.sum() == 0:
+        # Check if model output is nearly constant (flat model)
+        if (y_pred_full.max() - y_pred_full.min()).item() < 1e-3:
+            print("Model output range too small, likely constant. Returning max_error.")
             return max_error
 
-        # Apply mask to data
-        X_optim = X_data[mask_in_range].clone().detach().requires_grad_(True)
-        y_target = y_target[mask_in_range]
-            
+        # Compute sensitivity (gradient of output w.r.t. inputs)
+        X_data_for_grad = X_data.clone().detach().requires_grad_(True)
+        y_pred_check = self.forward(X_data_for_grad.to("cpu")).to(device)
+        grads = torch.autograd.grad(
+            outputs=y_pred_check,
+            inputs=X_data_for_grad,
+            grad_outputs=torch.ones_like(y_pred_check),
+            create_graph=False,
+            retain_graph=False,
+            only_inputs=True
+        )[0]
+        mean_grad = grads.norm(p=2, dim=1).mean()
+        if mean_grad < 1e-5:
+            print("Model gradient too small — not invertible. Returning max_error.")
+            return max_error
+
+        # Create mask where y_target is within range of model outputs
+        mask_in_range = (y_target >= y_pred_full.min()) & (y_target <= y_pred_full.max())
+
+        if mask_in_range.sum() == 0:
+            print("All points are outside the model output range, returning max_error =", max_error)
+            return max_error
+
+        X_orig = X_data[mask_in_range].clone().detach()
+        y_target_masked = y_target[mask_in_range]
+        X_optim = X_orig.clone().detach().requires_grad_(True)
+
         optimizer = torch.optim.Adam([X_optim], lr=lr)
 
         for _ in range(steps):
             optimizer.zero_grad()
             y_pred = self.forward(X_optim.to("cpu")).to(device)
-                
-            loss = ((y_pred - y_target) ** 2).mean()
+
+            loss = ((y_pred - y_target_masked) ** 2).mean() + (X_optim - X_orig).norm(p=2, dim=1).mean()
 
             if torch.isnan(loss) or torch.isinf(loss):
-                print("Loss exploded in eval_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_error =", max_error)
+                print("Loss exploded in eval_inv_error_torch. Returning max_error.")
                 return max_error
 
             loss.backward()
@@ -845,23 +848,115 @@ class Tree:
 
         with torch.no_grad():
             y_final = self.forward(X_optim.to("cpu")).to(device)
+
+            y_error = ((y_final - y_target_masked) ** 2).mean()
+            x_error = ((X_optim - X_orig) ** 2).mean()
+
+            if y_error > tolerance:
+                return max_error
+
+            return x_error.item()
+    # def eval_inv_error_torch(self, data: Union[np.ndarray, torch.Tensor], steps=50, lr=0.001) -> float:
+    #     """
+    #     Evaluate inverse error using PyTorch optimization.
+    #     Hybrid initialization:
+    #     - If X_orig predicts well -> start from X_orig
+    #     - Else -> start from zeros (center of allowed region)
+    #     """
+
+    #     if self.inv_loss > 0:
+    #         return self.inv_loss
+
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    #     if isinstance(data, np.ndarray):
+    #         data = torch.tensor(data, dtype=torch.float32).to(device)
+    #     else:
+    #         data = data.clone().detach().to(device)
+
+    #     # mean_x = data[:, :-1].mean(dim=0)
+    #     # std_x = data[:, :-1].std(dim=0)
+    #     # std_x[std_x == 0] = 1.0  # Avoid division by zero
+    #     # data[:, :-1] = (data[:, :-1] - mean_x) / std_x
+
+    #     # mean_y = data[:, -1].mean(dim=0)
+    #     # std_y = data[:, -1].std(dim=0)
+    #     # std_y[std_y == 0] = 1.0  # Avoid division by zero
+    #     # data[:, -1] = (data[:, -1] - mean_y) / std_y
+
+    #     # plot_scatter(data[:, :-1].to("cpu").numpy(), data[:, -1].to("cpu").numpy())
+
+    #     X_data = data[:, :-1].clone().detach()
+    #     y_target = data[:, -1].clone().detach()
+
+    #     # Compute data limits
+    #     data_limits = X_data.max(dim=0).values - X_data.min(dim=0).values
+    #     tolerance = 0.01 * (y_target.max() - y_target.min())
+    #     max_error = (torch.norm(data_limits).item())**2 # L2 norm
+
+    #     # If tree is constant, return max error
+    #     if self.depth == 0 or self.is_constant_node(self.start_node):
+    #         print(f"Tree {self.to_math_expr()} is constant, returning max_error = {max_error}")
+    #         return max_error
+
+    #     y_pred_full = self.forward(X_data.to("cpu")).to(device)
+
+    #     # plot_results(X_data.to("cpu").numpy(), y_target.to("cpu").numpy(), y_pred_full.to("cpu").numpy().flatten(), "Initial comparison")
+        
+    #     # try:
+    #     #     plot_scatter(X_data.to("cpu").numpy(), y_pred_full.to("cpu").numpy().flatten(), "Initial")
+    #     # except Exception as e:
+    #     #     print(f"Error plotting scatter: {e}")
+    #     # quit()        
+        
+    #     # Создаем маску с правильной формой
+    #     mask_in_range = (y_target >= y_pred_full.min()) & (y_target <= y_pred_full.max())
+
+    #     # If all points are outside the range, return max error
+    #     if mask_in_range.sum() == 0:
+    #         print("All points are outside the range, returning max_error =", max_error)
+    #         return max_error
+
+    #     # Apply mask to data
+    #     X_optim = X_data[mask_in_range].clone().detach().requires_grad_(True)
+    #     y_target = y_target[mask_in_range]
+            
+    #     optimizer = torch.optim.Adam([X_optim], lr=lr)
+
+    #     for _ in range(steps):
+    #         optimizer.zero_grad()
+    #         y_pred = self.forward(X_optim.to("cpu")).to(device)
                 
-            diff = torch.abs(y_final - y_target)
-            failed_mask = diff > tolerance
-            success_mask = ~failed_mask
+    #         loss = ((y_pred - y_target) ** 2).mean() + (X_optim - X_data[mask_in_range]).norm(p=2, dim=1).mean() # MSE + L2 norm
 
-            # try:
-            #     plot_scatter(X_optim.to("cpu").numpy(), y_final.to("cpu").numpy().flatten(), "Optimized")
-            # except Exception as e:
-            #     print(f"Error plotting scatter: {e}")
-            # quit()
+    #         if torch.isnan(loss) or torch.isinf(loss):
+    #             print("Loss exploded in eval_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_error =", max_error)
+    #             return max_error
 
-            # X_optim = X_optim*std_x + mean_x
+    #         loss.backward()
+    #         torch.nn.utils.clip_grad_norm_([X_optim], max_norm=1.0)
+    #         optimizer.step()
 
-            spatial_error = torch.norm(X_optim - X_data[mask_in_range], dim=1)
-            error = torch.where(success_mask, spatial_error, torch.full_like(spatial_error, max_error))
-            # print(f"error.mean().item() for model {self.math_expr} is: {error.mean().item()}")
-            return error.mean().item()
+    #     with torch.no_grad():
+    #         y_final = self.forward(X_optim.to("cpu")).to(device)
+                
+    #         diff = torch.abs(y_final - y_target)
+    #         failed_mask = diff > tolerance
+    #         success_mask = ~failed_mask
+
+    #         # try:
+    #         #     plot_scatter(X_optim.to("cpu").numpy(), y_final.to("cpu").numpy().flatten(), "Optimized")
+    #         # except Exception as e:
+    #         #     print(f"Error plotting scatter: {e}")
+    #         # quit()
+
+    #         # X_optim = X_optim*std_x + mean_x
+
+    #         # spatial_error = torch.norm(X_optim - X_data[mask_in_range], dim=1)
+    #         spatial_error = torch.mean((X_optim - X_data[mask_in_range])**2)
+    #         error = torch.where(success_mask, spatial_error, torch.full_like(spatial_error, max_error))
+    #         # print(f"error.mean().item() for model {self.math_expr} is: {error.mean().item()}")
+    #         return error.mean().item()
 
     def eval_abs_inv_error(self, data: Union[np.ndarray, torch.Tensor]) -> float:
         """
@@ -1008,17 +1103,21 @@ class Tree:
 
         # print("in eval_abs_inv_error_torch with error_type =", error_type)
 
+        # print("pred_limits in eval_abs_inv_error_torch 1:", pred_limits)
+
         if error_type == "abs" and self.abs_loss > 0:
             return self.abs_loss
         elif error_type == "spatial" and self.spatial_abs_loss > 0:
             return self.spatial_abs_loss
         elif self.abs_loss > 0 and self.spatial_abs_loss > 0:
             return (self.spatial_abs_loss, self.abs_loss)
+        
+        # print("pred_limits in eval_abs_inv_error_torch 2:", pred_limits)
 
         # print("before device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+        # print("pred_limits in eval_abs_inv_error_torch 3:", pred_limits)
         # Подготавливаем данные - переносим на нужное устройство
         if isinstance(data, np.ndarray):
             data = torch.tensor(data, dtype=torch.float32).to(device)
@@ -1036,10 +1135,14 @@ class Tree:
         # std_y[std_y == 0] = 1.0  # Avoid division by zero
         # data[:, -1] = (data[:, -1] - mean_y) / std_y    
 
+        # print("pred_limits in eval_abs_inv_error_torch 4:", pred_limits)
+
         # Разделяем входные и выходные данные
         # print("before X_orig = data[:, :-1].clone().detach()")
         X_orig = data[:, :-1].clone().detach()
         y_target = data[:, -1].clone().detach() 
+
+        # print("pred_limits in eval_abs_inv_error_torch 5:", pred_limits)
 
         # define max_error
         # print("pred_limits is None:", pred_limits is None)
@@ -1047,21 +1150,31 @@ class Tree:
             pred_limits = torch.tensor(2*MAX_VALUE, dtype=torch.float32, device=device)
             # print("setted pred_limits to 2*MAX_VALUE")
 
+        # print("pred_limits in eval_abs_inv_error_torch 6:", pred_limits)
+
         # print("before pred_limits.to(device=device, dtype=torch.float32).unsqueeze(0):", pred_limits)
         pred_limits = pred_limits.to(device=device, dtype=torch.float32).unsqueeze(0)
+        # print("pred_limits in eval_abs_inv_error_torch 7:", pred_limits)
         # print("after pred_limits.to(device=device, dtype=torch.float32).unsqueeze(0):", pred_limits)
         # print("pred_limits.type():", pred_limits.type())
         # pred_limits = torch.max(pred_limits, torch.max(y_target.abs(), dim=0).values)
         pred_limits = torch.max(pred_limits, torch.max(y_target, dim=0).values - torch.min(y_target, dim=0).values)
+        # print("y_target.isnan().any()", y_target.isnan().any())
+        # print("pred_limits in eval_abs_inv_error_torch 8:", pred_limits)
         # print("pred_limits = torch.max(pred_limits, torch.max(y_target, dim=0).values - torch.min(y_target, dim=0).values)", pred_limits)
         # print(f"pred_limits: {pred_limits}")
         spatial_limits = torch.max(X_orig, dim=0).values - torch.min(X_orig, dim=0).values
+        # print("pred_limits in eval_abs_inv_error_torch 9:", pred_limits)
         # max_spatial_error = torch.norm(spatial_limits).item()
-        max_spatial_error = torch.norm(spatial_limits)
+        max_spatial_error = (torch.norm(spatial_limits))**2
+        # print("pred_limits in eval_abs_inv_error_torch 10:", pred_limits)
         # print(f"spatial_limits: {spatial_limits}")
+        # print("spatial_limits in eval_abs_inv_error_torch:", spatial_limits)
+        # print("pred_limits in eval_abs_inv_error_torch:", pred_limits)
         limits = torch.cat((spatial_limits, pred_limits), dim=0)
+        # print("limits in eval_abs_inv_error_torch:", limits)
         # max_error = torch.norm(limits).item()
-        max_error = torch.norm(limits)
+        max_error = (torch.norm(limits))**2
         
         # Calculate clip value based on data limits (10% of max range)
         clip_value = 0.1 * torch.max(spatial_limits).item()
@@ -1073,6 +1186,7 @@ class Tree:
 
         # Создаем оптимизатор
         optimizer = torch.optim.Adam([X_optim], lr=lr)
+        criterion = torch.nn.MSELoss()
 
         # Выполняем оптимизацию
         for _ in range(steps):
@@ -1083,18 +1197,25 @@ class Tree:
                 
             # Вычисляем функцию потерь
             # Compute squared L2 norm of concatenated (x,y) vectors for each point in batch
-            loss = torch.mean(torch.sum((X_optim - X_orig)**2, dim=1) + (y_pred - y_target)**2)
+            # loss = torch.mean(torch.sum((X_optim - X_orig)**2, dim=1) + (y_pred - y_target)**2)
+            # print("X_optim.shape, y_pred.shape, X_orig.shape, y_target.shape", X_optim.shape, y_pred.shape, X_orig.shape, y_target.shape)
+            # print("y_target.unsqueeze(1).shape:", y_target.unsqueeze(1).shape)
+            # print("torch.cat((X_optim, y_pred), dim=1).shape:", torch.cat((X_optim, y_pred), dim=1).shape   )
+            # print("torch.cat((X_orig, y_target.unsqueeze(1)), dim=1).shape:", torch.cat((X_orig, y_target.unsqueeze(1)), dim=1).shape)
+            loss = criterion(torch.cat((X_optim, y_pred), dim=1), torch.cat((X_orig, y_target.unsqueeze(1)), dim=1))
 
             if torch.isnan(loss) or torch.isinf(loss):
-                
                 if error_type == "abs":
                     print("Loss exploded in eval_abs_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_error =", max_error)
+                    # quit()
                     return max_error.to("cpu")
                 elif error_type == "spatial":
                     print("Loss exploded in eval_abs_inv_error_torch during optimization for model:", self.to_math_expr(), "returning max_spatial_error =", max_spatial_error)
+                    # quit()
                     return max_spatial_error.to("cpu")
                 else:
                     print("Loss exploded in eval_abs_inv_error_torch during optimization for model:", self.to_math_expr(), "returning (max_spatial_error, max_error) =", (max_spatial_error, max_error))
+                    # quit()
                     return (max_spatial_error.to("cpu"), max_error.to("cpu"))
             
             # Вычисляем градиенты и делаем шаг оптимизации
@@ -1117,65 +1238,69 @@ class Tree:
                     return max_error.to("cpu")
                 # rmse = torch.mean(torch.sqrt(torch.sum(concatenated_error**2, dim=1))).item()
                 # rmse = torch.mean(torch.norm(concatenated_error, dim=1)).item()
-                rmse = torch.mean(torch.norm(concatenated_error, dim=1)).to("cpu")
-                if rmse.isnan() or rmse.isinf():
-                    print(f"[{self.to_math_expr()}] rmse contains NaN/Inf — skipping, returning max_error = {max_error}")
+                # rmse = torch.mean(torch.norm(concatenated_error, dim=1)).to("cpu")
+                mse = torch.mean((concatenated_error)**2).to("cpu")
+                if mse.isnan() or mse.isinf():
+                    print(f"[{self.to_math_expr()}] mse contains NaN/Inf — skipping, returning max_error = {max_error}")
                     return max_error.to("cpu")
                 # print("rmse1:", rmse)
                 # rmse = torch.sqrt(torch.mean(torch.sum(concatenated_error**2, dim=1))).item()
                 # print("rmse2:", rmse)
                 # quit()
-                if rmse > max_error:
+                if mse > max_error:
                     # print(f"[{self.to_math_expr()}] rmse ({rmse}) > max_error ({max_error}) — skipping, returning max_error = {max_error}")
                     return max_error.to("cpu")
 
             elif error_type == "spatial":
                 # spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1)).item()
-                spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1))
-                if spatial_rmse.isnan() or spatial_rmse.isinf():
-                    print(f"[{self.to_math_expr()}] spatial_rmse contains NaN/Inf — skipping, returning max_spatial_error = {max_spatial_error}")
+                # spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1))
+                spatial_mse = torch.mean((X_optim - X_orig)**2)
+                if spatial_mse.isnan() or spatial_mse.isinf():
+                    print(f"[{self.to_math_expr()}] spatial_mse contains NaN/Inf — skipping, returning max_spatial_error = {max_spatial_error}")
                     return max_spatial_error.to("cpu")
-                if spatial_rmse > max_spatial_error:
+                if spatial_mse > max_spatial_error:
                     return max_spatial_error.to("cpu")
-                rmse = spatial_rmse.to("cpu")
+                mse = spatial_mse.to("cpu")
             
             else: # error_type == "abs" and "spatial"
                 y_final = self.forward(varval=X_optim.to("cpu")).to(device)
                 # print("y_final.dim()", y_final.dim())
 
-                spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1))
+                # spatial_rmse = torch.mean(torch.norm(X_optim - X_orig, dim=1))
+                spatial_mse = torch.mean((X_optim - X_orig)**2)
                 # print("spatial_rmse.dim()", spatial_rmse.dim())
-                if spatial_rmse.isnan() or spatial_rmse.isinf():
-                    print(f"[{self.to_math_expr()}] spatial_rmse contains NaN/Inf — skipping, setting max_spatial_error = {max_spatial_error}")
-                    spatial_rmse = max_spatial_error
-                if spatial_rmse > max_spatial_error:
-                    spatial_rmse = max_spatial_error
+                if spatial_mse.isnan() or spatial_mse.isinf():
+                    print(f"[{self.to_math_expr()}] spatial_mse contains NaN/Inf — skipping, setting max_spatial_error = {max_spatial_error}")
+                    spatial_mse = max_spatial_error
+                if spatial_mse > max_spatial_error:
+                    spatial_mse = max_spatial_error
                 # print("spatial_rmse.dim()", spatial_rmse.dim())
 
                 # compute abs error
                 concatenated_error = torch.cat((X_optim - X_orig, y_final - y_target.unsqueeze(1)), dim=1)
                 # print("concatenated_error.dim()", concatenated_error.dim())
                 if concatenated_error.isnan().any() or concatenated_error.isinf().any():
-                    print(f"[{self.to_math_expr()}] concatenated_error contains NaN/Inf — skipping, returning (spatial_rmse, max_error) = ({spatial_rmse}, {max_error})")
-                    return (spatial_rmse.to("cpu"), max_error.to("cpu"))
+                    print(f"[{self.to_math_expr()}] concatenated_error contains NaN/Inf — skipping, returning (spatial_mse, max_error) = ({spatial_mse}, {max_error})")
+                    return (spatial_mse.to("cpu"), max_error.to("cpu"))
                 # rmse = torch.mean(torch.sqrt(torch.sum(concatenated_error**2, dim=1))).item()
-                abs_rmse = torch.mean(torch.norm(concatenated_error, dim=1))
+                # abs_rmse = torch.mean(torch.norm(concatenated_error, dim=1))
+                abs_mse = torch.mean((concatenated_error)**2)
                 # print("abs_rmse.dim()", abs_rmse.dim())
-                if abs_rmse.isnan() or abs_rmse.isinf():
-                    print(f"[{self.to_math_expr()}] abs_rmse contains NaN/Inf — skipping, returning (spatial_rmse, max_error) = ({spatial_rmse}, {max_error})")
-                    return (spatial_rmse.to("cpu"), max_error.to("cpu"))
+                if abs_mse.isnan() or abs_mse.isinf():
+                    print(f"[{self.to_math_expr()}] abs_mse contains NaN/Inf — skipping, returning (spatial_mse, max_error) = ({spatial_mse}, {max_error})")
+                    return (spatial_mse.to("cpu"), max_error.to("cpu"))
                 # print("rmse1:", rmse)
                 # rmse = torch.sqrt(torch.mean(torch.sum(concatenated_error**2, dim=1))).item()
                 # print("rmse2:", rmse)
                 # quit()
-                if abs_rmse > max_error:
-                    # print(f"[{self.to_math_expr()}] abs_rmse ({abs_rmse}) > max_error ({max_error}) — skipping, returning max_error = {max_error}")
-                    abs_rmse = max_error
+                if abs_mse > max_error:
+                    # print(f"[{self.to_math_expr()}] abs_mse ({abs_mse}) > max_error ({max_error}) — skipping, returning max_error = {max_error}")
+                    abs_mse = max_error
 
-                rmse = (spatial_rmse.to("cpu"), abs_rmse.to("cpu"))
+                mse = (spatial_mse.to("cpu"), abs_mse.to("cpu"))
                 # print("type(rmse[0]), type(rmse[1])", type(rmse[0]), type(rmse[1]))
 
-            return rmse
+            return mse
 
     # print tree in a visual representation (as a bash tree command in terminal)
     def print_tree(self):
@@ -1858,7 +1983,13 @@ def optimize_population_constants(models: List[Tree], training_data: Union[np.nd
         model.optimize_constants(training_data, max_iter=max_iter)
 
 # set evaluated error for models
-def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndarray, torch.Tensor], epoch: int, requires_forward_error: bool, requires_inv_error: bool, requires_abs_error: bool, requires_spatial_abs_error: bool):
+def set_evaluated_error(models_to_eval: List[Tree], 
+                        training_data: Union[np.ndarray, torch.Tensor], 
+                        epoch: int, 
+                        requires_forward_error: bool, 
+                        requires_inv_error: bool, 
+                        requires_abs_error: bool, 
+                        requires_spatial_abs_error: bool):
     """Set evaluated error for models"""
     print("len(models_to_eval):", len(models_to_eval))
     for model in models_to_eval:
@@ -1881,11 +2012,11 @@ def set_evaluated_error(models_to_eval: List[Tree], training_data: Union[np.ndar
                 print(f"Warning in set_evaluated_error: Model {model.math_expr} depth={model.depth} has invalid error {model.error}")
                 model.error = float('inf')
                 model.forward_loss = float('inf')
-                if hasattr(model, 'inv_loss'):
+                if requires_inv_error:
                     model.inv_loss = float('inf')
-                if hasattr(model, 'abs_loss'):
+                if requires_abs_error:
                     model.abs_loss = float('inf')
-                if hasattr(model, 'spatial_abs_loss'):
+                if requires_spatial_abs_error:
                     model.spatial_abs_loss = float('inf')
         except Exception as e:
             print(f"Error evaluating model {model.math_expr}: {e}")
