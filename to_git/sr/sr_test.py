@@ -532,10 +532,10 @@ def create_diverse_population(
     return population, stats
 
 # save model results to files, including plots and expressions
-def save_model_results(model: Tree, 
+def save_model_results(models: Dict[str, Tree], 
                        X_data: np.ndarray, 
                        Y_data: np.ndarray, 
-                       Y_pred: np.ndarray, 
+                    #    Y_pred: np.ndarray, 
                        target_func: str = None, 
                        rmse_stats: dict = None, 
                        var_stats: PopulationStats = None, 
@@ -545,7 +545,7 @@ def save_model_results(model: Tree,
     Save model results to files, including plots and expressions.
     
     Args:
-        model: The trained Tree model
+        models: Dictionary mapping criterion names to best Tree models for that criterion
         X_data: Input data
         Y_data: True output data
         Y_pred: Predicted output data
@@ -555,8 +555,6 @@ def save_model_results(model: Tree,
         args: Input arguments
         time_taken: Time taken to train the model
     """
-    # from datetime import datetime
-    
     # Create results directory if it doesn't exist
     results_dir = os.path.join(os.path.dirname(__file__), '..', 'results')
     print(f"results_dir: {results_dir}")
@@ -570,8 +568,6 @@ def save_model_results(model: Tree,
     if dataset_name is None or dataset_name == "":
         dataset_name = "unknown_dataset"
     
-    # print(f"dataset_name: {dataset_name}")
-    # print(f"vars(args): {vars(args)}")
     func_name = args.function
     if func_name is None:
         func_name = target_func
@@ -589,17 +585,13 @@ def save_model_results(model: Tree,
     run_name = f"{dataset_name}__{func_name}__{error_name_str}_{seed}"
     if run_name in os.listdir(results_dir):
         run_name = f"{run_name}__{time.strftime('%Y%m%d_%H%M%S')}"
-    # Create timestamp-based subdirectory
-    # timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     run_dir = os.path.join(results_dir, f'{run_name}')
-    # print(f"run_dir: {run_dir}")
-    # quit()
     os.makedirs(run_dir)
     
     # Save model information to text file with UTF-8 encoding
     with open(os.path.join(run_dir, 'model_info.txt'), 'w', encoding='utf-8') as f:
         f.write("=" * 50 + "\n")
-        f.write("Model Information\n")
+        f.write("Models Information\n")
         f.write("=" * 50 + "\n\n")
 
         if args:
@@ -609,84 +601,67 @@ def save_model_results(model: Tree,
                 f.write(f"{key}: {value}\n")
             f.write("\n")
         
-        f.write("Mathematical Expression:\n")
+        f.write("Models by Criterion:\n")
         f.write("-" * 30 + "\n")
-        f.write(f"{model.math_expr}\n\n")
-        
+        for criterion, model in models.items():
+            if model is None:
+                continue
+            f.write(f"\nBest model by {criterion}:\n")
+            f.write(f"Expression: {model.math_expr}\n")
+            f.write(f"Depth: {model.depth}\n")
+            
+            # Map args flags to model attributes
+            attr_map = {
+                'requires_forward_error': 'forward_loss',
+                'requires_inv_error': 'inv_loss', 
+                'requires_abs_inv_error': 'abs_loss',
+                'requires_spatial_abs_inv_error': 'spatial_abs_loss'
+            }
+            
+            # Write error values for enabled flags
+            for flag, attr in attr_map.items():
+                if vars(args)[flag]:
+                    f.write(f"{attr}: {getattr(model, attr, 'N/A')}\n")
+            f.write("\n")
+
         if target_func:
-            f.write("Target Function:\n")
+            f.write("\nTarget Function:\n")
             f.write("-" * 30 + "\n")
             f.write(f"{target_func}\n\n")
-        
-        f.write("Model Structure:\n")
-        f.write("-" * 30 + "\n")
-        # Convert tree structure to plain ASCII
-        tree_str = model.print_tree().replace('└', '\\-').replace('├', '|-').replace('─', '-')
-        f.write(f"{tree_str}\n")
-        
-        f.write("Model Performance:\n")
-        f.write("-" * 30 + "\n")
-        f.write(f"Final Error: {model.error:.6f}\n")
-        if hasattr(model, 'min_loss'):
-            f.write(f"Minimum Loss: {model.min_loss:.6f}\n")
-
-        f.write(f"Time taken in seconds: {time_taken:.2f}\n")    
+            
+        f.write(f"\nTime taken in seconds: {time_taken:.2f}\n")    
     
-    # Save prediction plot
+    # Save prediction plots for each model
     import matplotlib.pyplot as plt
     
-    # # Handle different input dimensions
-    # if len(X_data.shape) == 1:  # 1D input
-    #     plt.figure(figsize=(10, 6))
-    #     plt.scatter(X_data, Y_data, label='True', alpha=0.5)
-    #     plt.scatter(X_data, Y_pred, label='Predicted', alpha=0.5)
-    #     plt.xlabel('x')
-    #     plt.ylabel('y')
-    # elif len(X_data.shape) == 2 and X_data.shape[1] == 2:  # 2D input
-    #     from mpl_toolkits.mplot3d import Axes3D
-    #     fig = plt.figure(figsize=(12, 8))
-    #     ax = fig.add_subplot(111, projection='3d')
-    #     ax.scatter(X_data[:, 0], X_data[:, 1], Y_data, label='True', alpha=0.5)
-    #     ax.scatter(X_data[:, 0], X_data[:, 1], Y_pred, label='Predicted', alpha=0.5)
-    #     ax.set_xlabel('x₁')
-    #     ax.set_ylabel('x₂')
-    #     ax.set_zlabel('y')
-    # else:  # Higher dimensions - create error vs predicted plot
-    #     plt.figure(figsize=(10, 6))
-    #     plt.scatter(Y_data, Y_pred, alpha=0.5)
-    #     plt.xlabel('True Values')
-    #     plt.ylabel('Predicted Values')
-    #     # Add perfect prediction line
-    #     min_val = min(Y_data.min(), Y_pred.min())
-    #     max_val = max(Y_data.max(), Y_pred.max())
-    #     plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction')
-    
-    # plt.title('Model Predictions vs True Values')
-    # plt.legend()
-    # plt.grid(True)
-    # plt.savefig(os.path.join(run_dir, 'predictions.png'), dpi=300, bbox_inches='tight')
-    # plt.close()
-    
-    # # Save error history plot if available
-    # if error_history is not None:
-    #     plt.figure(figsize=(10, 6))
-    #     plt.plot(error_history, linewidth=2)
-    #     plt.title('Training Error History')
-    #     plt.xlabel('Epoch')
-    #     plt.ylabel('Error')
-    #     plt.grid(True)
-    #     plt.yscale('log')  # Use log scale for better visualization
-    #     plt.savefig(os.path.join(run_dir, 'error_history.png'), dpi=300, bbox_inches='tight')
-    #     plt.close()
+    for criterion, model in models.items():
+        # Calculate predictions for this model
+        if isinstance(X_data, np.ndarray):
+            X_tensor = torch.tensor(X_data, dtype=torch.float32)
+        else:
+            X_tensor = X_data
+        if model is None:
+            continue
+        Y_pred_model = model.forward(varval=X_tensor.to("cpu")).detach().numpy().reshape(-1)
+        # print("Y_pred_model.shape:", Y_pred_model.shape)
+        
+        if X_data.shape[1] == 1:
+            X_flat = X_data.flatten()
+            fig = plot_results(X_flat, Y_data, Y_pred_model, 
+                             f"Model Comparison for {criterion}\n{target_func}\nPredicted: {model.math_expr}", 
+                             return_plot=True)
+        elif X_data.shape[1] == 2:
+            fig = plot_results(X_data, Y_data, Y_pred_model,
+                             f"Model Comparison for {criterion}\n{target_func}\nPredicted: {model.math_expr}",
+                             return_plot=True)
+            
+        fig.savefig(os.path.join(run_dir, f'results_{criterion}.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-    if X_data.shape[1] == 1:
-        X_data = X_data.flatten()  # Flatten for 1D plotting
-        fig_results = plot_results(X_data, Y_data, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {model.math_expr}", return_plot=True)
-    elif X_data.shape[1] == 2:
-        fig_results = plot_results(X_data, Y_data, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {model.math_expr}", return_plot=True)
+    # Save RMSE history plots
     figs_rmse = plot_loss_history(rmse_stats, return_plot=True)
-
-    # save rmse_stats to file
+    
+    # Save RMSE stats to file
     with open(os.path.join(run_dir, 'rmse_stats.csv'), 'w', encoding='utf-8') as f:
         # Write header
         header = ['Epoch']
@@ -745,17 +720,16 @@ def save_model_results(model: Tree,
             
             f.write(','.join(row) + '\n')
 
+    # Save variable statistics plot
     fig_var = var_stats.plot_stats(return_plot=True)
     
+    # Save all RMSE plots
     for i, fig in enumerate(figs_rmse):
         fig.savefig(os.path.join(run_dir, f'rmse_history_{i}.png'), dpi=300, bbox_inches='tight')
-
-    fig_results.savefig(os.path.join(run_dir, 'results.png'), dpi=300, bbox_inches='tight')
-    fig_var.savefig(os.path.join(run_dir, 'var_stats.png'), dpi=300, bbox_inches='tight')
-    
-    for i, fig in enumerate(figs_rmse):
         plt.close(fig)
-    plt.close(fig_results)
+
+    # Save variable statistics plot
+    fig_var.savefig(os.path.join(run_dir, 'var_stats.png'), dpi=300, bbox_inches='tight')
     plt.close(fig_var)
 
 # run evolutionary algorithm with function filtering
@@ -817,7 +791,7 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
         model.mutation_prob = mutation_prob
     
     print("Starting evolution...")
-    final_model, rmse_stats = evolution(num_epochs, 
+    final_models, rmse_stats = evolution(num_epochs, 
                               start_models, 
                               data, 
                               population_size,
@@ -832,30 +806,33 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     end_time = time.time()
     # Evaluate and visualize results
     print("Evaluating and visualizing results...")
-    Y_aprox = evaluate_model(final_model, X_data)
-    # print("Y_aprox.shape:", Y_aprox.shape)
-    
-    # Convert tensors to numpy for plotting
-    X_plot = X_data.detach().numpy()
-    Y_true = Y_data.detach().numpy()
-    Y_pred = Y_aprox.detach().numpy().reshape(-1)
-    
-    # Plot results
-    # if not SAVE_RESULTS:
-    if not save_results:
-        print("Plotting results and RMSE history...")
-        if X_plot.shape[1] == 1:
-            X_plot = X_plot.flatten()  # Flatten for 1D plotting
-            plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}", return_plot=False)
-        elif X_plot.shape[1] == 2:
-            plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}", return_plot=False)
-        plot_loss_history(rmse_stats, return_plot=False) 
-    
-    # Print the final model
-    # print("\nFinal Model:")
-    # print(final_model.print_tree())
-    print("\FINAL MODEL Mathematical Expression:")
-    print(final_model.math_expr)
+    for criterion, final_model in final_models.items():
+        if final_model is None:
+            continue
+        Y_aprox = evaluate_model(final_model, X_data)
+        # print("Y_aprox.shape:", Y_aprox.shape)
+        
+        # Convert tensors to numpy for plotting
+        X_plot = X_data.detach().numpy()
+        Y_true = Y_data.detach().numpy()
+        Y_pred = Y_aprox.detach().numpy().reshape(-1)
+        
+        # Plot results
+        # if not SAVE_RESULTS:
+        if not save_results:
+            print("Plotting results and RMSE history...")
+            if X_plot.shape[1] == 1:
+                X_plot = X_plot.flatten()  # Flatten for 1D plotting
+                plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}", return_plot=False)
+            elif X_plot.shape[1] == 2:
+                plot_results(X_plot, Y_true, Y_pred, "Model Comparison for " + target_func + f"\nPredicted: {final_model.math_expr}", return_plot=False)
+            plot_loss_history(rmse_stats, return_plot=False) 
+        
+        # Print the final model
+        # print("\nFinal Model:")
+        # print(final_model.print_tree())
+        print("\FINAL MODEL Mathematical Expression:")
+        print(final_model.math_expr)
     # from simplifying import simplify_expression
     # print("Simplified Expression:", simplify_expression(final_model.math_expr))
     print(f"=============Time taken: {end_time - start_time:.2f} seconds=============")
@@ -871,10 +848,10 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
     if save_results:
         print("Saving results...")
         save_model_results(
-            model=final_model,
+            models=final_models,
             X_data=X_plot,
             Y_data=Y_true,
-            Y_pred=Y_pred,
+            # Y_pred=Y_pred,
             target_func=target_func,
             rmse_stats=rmse_stats,
             var_stats=stats,
@@ -882,7 +859,11 @@ def run_evolution(X_data: Union[np.ndarray, torch.Tensor],
             time_taken=end_time - start_time
         )
 
-    return final_model
+    return final_models
+
+
+
+
 
 # main function
 if __name__ == "__main__":
@@ -922,7 +903,7 @@ if __name__ == "__main__":
                     if args.seed != FIXED_SEED:
                         args.seed = i
                     
-                    model = run_evolution(
+                    final_models = run_evolution(
                         data.iloc[:, :-1].values, 
                         data.iloc[:, -1].values,
                         num_epochs=args.epochs,
@@ -940,7 +921,7 @@ if __name__ == "__main__":
                         args=args,
                         desired_functions=desired_functions
                     )
-                    models.append(model)
+                    models.append(final_models)
                 
                 # Print summary of all runs
                 print("\n" + "="*50)
@@ -982,7 +963,7 @@ if __name__ == "__main__":
             models = []
             for i in range(args.runs):
                 print(f"\nRun {i+1}/{args.runs}")
-                model = run_evolution(
+                final_models = run_evolution(
                     X_data, Y_data, 
                     num_epochs=args.epochs,
                     start_population_size=args.start_population_size,
@@ -999,20 +980,20 @@ if __name__ == "__main__":
                     save_results=args.save_results,
                     args=args
                 )
-                models.append(model)
+                models.append(final_models)
             
             # Print summary
-            if args.runs > 1:
-                print("\n" + "="*50)
-                print(f"Summary ({args.runs} runs):")
-                print("="*50)
-                for i, model in enumerate(models):
-                    print(f"Run {i+1}: Error = {model.error:.6f}, Expression: {model.math_expr}")
+            # if args.runs > 1:
+            #     print("\n" + "="*50)
+            #     print(f"Summary ({args.runs} runs):")
+            #     print("="*50)
+            #     for i, model in enumerate(models):
+            #         print(f"Run {i+1}: Sum of losses = {model.error:.6f}, Expression: {model.math_expr}")
                 
-                best_model = min(models, key=lambda x: x.error)
-                print("\nBest model:")
-                print(f"Error: {best_model.error:.6f}")
-                print(f"Expression: {best_model.math_expr}")
+            #     best_model = min(models, key=lambda x: x.error)
+            #     print("\nBest model:")
+            #     print(f"Sum of losses: {best_model.error:.6f}")
+            #     print(f"Expression: {best_model.math_expr}")
         else:
             run_evolution(
                 X_data, Y_data, 

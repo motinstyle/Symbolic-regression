@@ -9,8 +9,6 @@ import sympy as sp
 import scipy.optimize as opt
 from dataclasses import dataclass, field
 from visual import plot_scatter, plot_results
-# global min_rmse_loss for the best model
-# min_rmse_loss = float('inf')
 
 # get deepcopy of an object
 def get_deepcopy(obj):
@@ -260,8 +258,8 @@ class Tree:
         self.is_unique = True
 
         self.error_history = None
-        self.min_rmse_loss = None
-        self.best_rmse = None
+        self.min_forward_loss = None
+        self.best_sum_of_losses = None
 
         self.grad = None
 
@@ -1734,7 +1732,7 @@ def mutation_constant(tree: Tree):
 #         return NAN_PUNISHMENT * torch.isnan(output).sum()
 #     return error
 
-def get_rmse_stats(models, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error):
+def get_stats(models, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error):
     """Calculate RMSE statistics for a list of models"""
     errors = [model.error for model in models]  # Already RMSE values
     forward_errors = [model.forward_loss for model in models] if requires_forward_error else None
@@ -1789,6 +1787,7 @@ def compute_domination(models: List[Tree]):
             if models[i].math_expr == models[j].math_expr or \
                 (models[i].error_is_set and models[j].error_is_set and \
                  models[i].depth == models[j].depth and \
+                 # np.isclose(models[i].error, models[j].error, atol=1e-6) and \ # 'error' is sum of all losses so if we check all losses, we dont need this
                  np.isclose(models[i].forward_loss, models[j].forward_loss, atol=1e-6) and \
                  np.isclose(models[i].abs_loss, models[j].abs_loss, atol=1e-6) and \
                  np.isclose(models[i].spatial_abs_loss, models[j].spatial_abs_loss, atol=1e-6) and \
@@ -1808,14 +1807,16 @@ def compute_domination(models: List[Tree]):
                 models[i].abs_loss <= models[j].abs_loss and \
                 models[i].inv_loss <= models[j].inv_loss and \
                 models[i].spatial_abs_loss <= models[j].spatial_abs_loss and \
-                models[i].max_num_of_node <= models[j].max_num_of_node and \
+                models[i].error <= models[j].error and \
+                # models[i].max_num_of_node <= models[j].max_num_of_node and \
                 models[i].depth <= models[j].depth and \
                 
                 (models[i].depth < models[j].depth or \
                  models[i].forward_loss < models[j].forward_loss or \
                  models[i].abs_loss < models[j].abs_loss or \
                  models[i].inv_loss < models[j].inv_loss or \
-                 models[i].spatial_abs_loss < models[j].spatial_abs_loss)):
+                 models[i].spatial_abs_loss < models[j].spatial_abs_loss or \
+                 models[i].error < models[j].error)):
                 # models[i].domain_loss <= models[j].domain_loss and \
                 #  models[i].domain_loss < models[j].domain_loss or \
                 
@@ -1842,7 +1843,7 @@ def calculate_crowding_distance(front: List[Tree]):
     # Calculate crowding distance for each objective
     # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node', 'domain_loss']
     # objectives = ['forward_loss', 'inv_loss', 'max_num_of_node']
-    objectives = ['forward_loss', 'inv_loss', 'depth', 'abs_loss', 'spatial_abs_loss']
+    objectives = ['forward_loss', 'inv_loss', 'abs_loss', 'spatial_abs_loss', 'error', 'depth'] # 'error' is sum of all losses
     
 
     for objective in objectives:
@@ -2032,23 +2033,24 @@ def set_evaluated_error(models_to_eval: List[Tree],
 def tournament(model1: Tree, model2: Tree):
     """Tournament selection"""
     # Select two random models
-    if model1.error < model2.error and \
-        model1.depth < model2.depth and \
+    if  model1.depth < model2.depth and \
+        model1.error < model2.error and \
         model1.forward_loss < model2.forward_loss and \
         model1.abs_loss < model2.abs_loss and \
         model1.inv_loss < model2.inv_loss and \
         model1.spatial_abs_loss < model2.spatial_abs_loss:
         # model1.domain_loss < model2.domain_loss and \
-
         return model1
-    elif model1.error > model2.error and \
-        model1.depth > model2.depth and \
+    
+    elif model1.depth > model2.depth and \
+        model1.error > model2.error and \
         model1.forward_loss > model2.forward_loss and \
         model1.abs_loss > model2.abs_loss and \
         model1.inv_loss > model2.inv_loss and \
         model1.spatial_abs_loss > model2.spatial_abs_loss:
         # model1.domain_loss > model2.domain_loss and \
         return model2
+    
     else:
 # TODO: if NSGA is used, else compute crowding distance for tournament selection =========================================
         model_with_max_crowding_distance = max(model1, model2, key=lambda x: x.crowding_distance)
@@ -2066,16 +2068,16 @@ def evolution(num_of_epochs,
               requires_inv_error, 
               requires_abs_error, 
               requires_spatial_abs_error, 
-              desired_functions=None):
+              desired_functions=None) -> Tuple[Dict[str, Tree], Dict[str, float]]:
     """evolution process with crossover, mutation, and constant optimization"""
     
     # for model in models:
     #     print(model.math_expr, "num_vars:", model.num_vars, end="\n")
 
     # initialize arrays for tracking progress
-    mean_rmse_arr = np.zeros(num_of_epochs)
-    median_rmse_arr = np.zeros(num_of_epochs)
-    best_rmse_arr = np.zeros(num_of_epochs)
+    mean_sum_of_losses_arr = np.zeros(num_of_epochs)
+    median_sum_of_losses_arr = np.zeros(num_of_epochs)
+    best_sum_of_losses_arr = np.zeros(num_of_epochs)
     
     if requires_forward_error:
         mean_forward_loss_arr = np.zeros(num_of_epochs)
@@ -2100,9 +2102,9 @@ def evolution(num_of_epochs,
 
     
     # initialize best model and best error
-    best_model = safe_deepcopy(models[0])
-    min_rmse_loss = float('inf')
-    best_rmse = float('inf')
+    # best_model = safe_deepcopy(models[0])
+    min_forward_loss = float('inf')
+    best_sum_of_losses = float('inf')
 
     # Model selection (choose method of selection based on params)
 
@@ -2121,10 +2123,12 @@ def evolution(num_of_epochs,
         "population_size": population_size,
         "method":          SELECTION_METHOD # "NSGA-II" by default
     }
+
+    # selection of models for init population////////////////////////////////////////////////////////////////////////////////////////////////////////
     models = model_selection(models, selection_params)
     # selection_params["population_size"] = NUM_OF_MODELS_TO_SELECT # uncomment if we want to select NUM_OF_MODELS_TO_SELECT models for init population
-    
-    # evolution loop
+
+    # evolution loop////////////////////////////////////////////////////////////////////////////////////////////////////////
     print("Starting evolution...")
     for epoch in range(num_of_epochs):
 
@@ -2133,7 +2137,6 @@ def evolution(num_of_epochs,
 
         print("EPOCH:", epoch)
         
-
         # Create part of a new population (copy of the current population)
         models_to_eval = []
         for model in models:
@@ -2253,7 +2256,7 @@ def evolution(num_of_epochs,
         # Best models selection (choose method of selection based on params)
         selected_models = model_selection(models_to_eval, selection_params)
         
-        # Ensure we have models
+        # Ensure we have models in case of no selection by NSGA-II
         if not selected_models:
             print(f"No selected models, using {selection_params['method']}")
             models_to_eval.sort(key=lambda x: x.error)
@@ -2261,77 +2264,62 @@ def evolution(num_of_epochs,
         else:
             models = selected_models
 
-        models.sort(key=lambda x: x.error)
-
-        # Track progress (RMSE statistics)
-        rmse_stats = get_rmse_stats(models, 
-                                    requires_forward_error, 
-                                    requires_inv_error, 
-                                    requires_abs_error, 
-                                    requires_spatial_abs_error)
-        mean_rmse_arr[epoch] = rmse_stats['mean_error']
-        median_rmse_arr[epoch] = rmse_stats['median_error']
-        best_rmse_arr[epoch] = rmse_stats['best_error']
+        # Track progress (sum of losses statistics)
+        epoch_stats = get_stats(models, 
+                               requires_forward_error, 
+                               requires_inv_error, 
+                               requires_abs_error, 
+                               requires_spatial_abs_error)
+        mean_sum_of_losses_arr[epoch] = epoch_stats['mean_error']
+        median_sum_of_losses_arr[epoch] = epoch_stats['median_error']
+        best_sum_of_losses_arr[epoch] = epoch_stats['best_error']
 
         if requires_forward_error:
-            mean_forward_loss_arr[epoch] = rmse_stats['mean_forward_loss']
-            median_forward_loss_arr[epoch] = rmse_stats['median_forward_loss']
-            best_forward_loss_arr[epoch] = rmse_stats['best_forward_loss']
+            mean_forward_loss_arr[epoch] = epoch_stats['mean_forward_loss']
+            median_forward_loss_arr[epoch] = epoch_stats['median_forward_loss']
+            best_forward_loss_arr[epoch] = epoch_stats['best_forward_loss']
 
         if requires_inv_error:
-            mean_inv_loss_arr[epoch] = rmse_stats['mean_inv_loss']
-            median_inv_loss_arr[epoch] = rmse_stats['median_inv_loss']
-            best_inv_loss_arr[epoch] = rmse_stats['best_inv_loss']
+            mean_inv_loss_arr[epoch] = epoch_stats['mean_inv_loss']
+            median_inv_loss_arr[epoch] = epoch_stats['median_inv_loss']
+            best_inv_loss_arr[epoch] = epoch_stats['best_inv_loss']
 
         if requires_abs_error:
-            mean_abs_loss_arr[epoch] = rmse_stats['mean_abs_loss']
-            median_abs_loss_arr[epoch] = rmse_stats['median_abs_loss']
-            best_abs_loss_arr[epoch] = rmse_stats['best_abs_loss']
+            mean_abs_loss_arr[epoch] = epoch_stats['mean_abs_loss']
+            median_abs_loss_arr[epoch] = epoch_stats['median_abs_loss']
+            best_abs_loss_arr[epoch] = epoch_stats['best_abs_loss']
 
         if requires_spatial_abs_error:
-            mean_spatial_abs_loss_arr[epoch] = rmse_stats['mean_spatial_abs_loss']
-            median_spatial_abs_loss_arr[epoch] = rmse_stats['median_spatial_abs_loss']
-            best_spatial_abs_loss_arr[epoch] = rmse_stats['best_spatial_abs_loss']
+            mean_spatial_abs_loss_arr[epoch] = epoch_stats['mean_spatial_abs_loss']
+            median_spatial_abs_loss_arr[epoch] = epoch_stats['median_spatial_abs_loss']
+            best_spatial_abs_loss_arr[epoch] = epoch_stats['best_spatial_abs_loss']
 
-        # Track best model
-        if models[0].error < best_rmse:
-            best_rmse = models[0].error
-            best_model = safe_deepcopy(models[0])
-            print("best_model:", best_model.math_expr, "best_rmse:", best_rmse)
-            print("forward_loss:", best_model.forward_loss, "inv_loss:", best_model.inv_loss, "abs_loss:", best_model.abs_loss, "spatial_abs_loss:", best_model.spatial_abs_loss, "max_num_of_node:", best_model.max_num_of_node)
+        # sorting models by error and selecting the best model as a model with minimal error//////////////////////////////////////////////////////////////////////////////////////////////////////// 
+        # models.sort(key=lambda x: x.error) # i need to get fronts[0] from nsga-ii selection
+        best_front = None
+        fronts = non_dominated_sort(models)
+        if len(fronts) > 0:
+            best_front = fronts[0]
+        else:
+            models.sort(key=lambda x: x.error) # i need to get fronts[0] from nsga-ii selection
+            best_front = models
 
-        # global min_rmse_loss
-        print("min_rmse_loss:", min_rmse_loss)
-        if models[0].forward_loss < min_rmse_loss:
-            min_rmse_loss = models[0].forward_loss
-            if min_rmse_loss < 0.0001:
-                print("min_rmse_loss < 0.0001")
-                print(f"Current best RMSE: {best_rmse:.6f}")
-                print(f"Number of unique expressions: {len(unique_expressions)}")
-                for model in models[:5]:
-                    print(model.math_expr, "depth:", model.depth, "forward_loss:", model.forward_loss, "inv_loss:", model.inv_loss, "abs_loss:", model.abs_loss, "spatial_abs_loss:", model.spatial_abs_loss, end="\n")
-                # quit()
-
-        # Print best model and its expression every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            print(f"Current best RMSE: {best_rmse:.6f}", )
-            print(f"Current mean RMSE: {rmse_stats['mean_error']:.6f}")
-            print(f"Current median RMSE: {rmse_stats['median_error']:.6f}")
-            print(f"Number of unique expressions: {len(unique_expressions)}")
-            for model in models[:5]:
-                print(model.math_expr, "depth:", model.depth, "forward_loss:", model.forward_loss, "inv_loss:", model.inv_loss, "abs_loss:", model.abs_loss, "spatial_abs_loss:", model.spatial_abs_loss, end="\n")
-
-    # Store results
-    best_model.error_history = mean_rmse_arr
-    best_model.min_rmse_loss = min_rmse_loss
-    best_model.best_rmse = best_rmse
-
+        best_models : Dict[str, Tree] = {}
+        all_criterions = ["error", "forward_loss", "inv_loss", "abs_loss", "spatial_abs_loss"]
+        required_criterions = [True, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error] # True means that the error criterion is always required
+        for criterion in all_criterions:
+            if required_criterions[all_criterions.index(criterion)]:
+                best_models[criterion] = min(best_front, key=lambda model: getattr(model, criterion))
+                if epoch % 10 == 0:
+                    print(f"Best model by {criterion}: {best_models[criterion].math_expr} - {getattr(best_models[criterion], criterion)}")
+            else:
+                best_models[criterion] = None
 
     # Store stats
     stats = {
-        "mean_error_arr": mean_rmse_arr,
-        "median_error_arr": median_rmse_arr,
-        "best_error_arr": best_rmse_arr,
+        "mean_error_arr": mean_sum_of_losses_arr,
+        "median_error_arr": median_sum_of_losses_arr,
+        "best_error_arr": best_sum_of_losses_arr,
 
         "mean_forward_loss_arr": mean_forward_loss_arr if requires_forward_error else None,
         "median_forward_loss_arr": median_forward_loss_arr if requires_forward_error else None,
@@ -2351,37 +2339,32 @@ def evolution(num_of_epochs,
     }
     
     # Plot error history using the new visualization function
-    
     # if not SAVE_RESULTS:
     #     from visual import plot_rmse_history
     #     plot_rmse_history(mean_rmse_arr, median_rmse_arr, best_rmse_arr)
     
     # print final results
-    print(f"Final min_rmse_loss: {min_rmse_loss}")
-    print(f"Best RMSE achieved: {best_rmse:.6f}")
-    print(f"Final mean RMSE: {rmse_stats['mean_error']:.6f}")
-    print(f"Final median RMSE: {rmse_stats['median_error']:.6f}")
-    print(f"Total number of unique expressions found: {len(unique_expressions)}")
+    # print(f"Final min_forward_loss: {min_forward_loss}")
+    # print(f"Best sum of losses achieved: {best_sum_of_losses:.6f}")
+    # print(f"Final mean sum of losses: {epoch_stats['mean_error']:.6f}")
+    # print(f"Final median sum of losses: {epoch_stats['median_error']:.6f}")
+    # print(f"Total number of unique expressions found: {len(unique_expressions)}")
 
     # return best model
     # print("selected_models:", [model.math_expr for model in models])
-    print("\n")
-    print("sorted_selected_models:", [model.math_expr for model in sorted(models, key=lambda x: x.error)])
-    for i, model in enumerate(sorted(models, key=lambda x: x.error)):
-        print(f"{i}: {model.math_expr}")
-        print(f"   RMSE: {model.error:.6f}")
-        print(f"   forward_loss: {model.forward_loss:.6f}")
-        print(f"   inv_loss: {getattr(model, 'inv_loss', 0):.6f}")
-        print(f"   abs_loss: {getattr(model, 'abs_loss', 0):.6f}")
-        print(f"   spatial_abs_loss: {getattr(model, 'spatial_abs_loss', 0):.6f}")
-        # print(f"   domain_loss: {model.domain_loss:.6f}")
-        print(f"   complexity: {model.max_num_of_node}")
+    # print("\n")
+    # print("sorted_selected_models:", [model.math_expr for model in sorted(models, key=lambda x: x.error)])
+    # for i, model in enumerate(sorted(models, key=lambda x: x.error)):
+    #     print(f"{i}: {model.math_expr}")
+    #     print(f"   sum of losses: {model.error:.6f}")
+    #     print(f"   forward_loss: {model.forward_loss:.6f}")
+    #     print(f"   inv_loss: {getattr(model, 'inv_loss', 0):.6f}")
+    #     print(f"   abs_loss: {getattr(model, 'abs_loss', 0):.6f}")
+    #     print(f"   spatial_abs_loss: {getattr(model, 'spatial_abs_loss', 0):.6f}")
+    #     print(f"   depth: {model.depth}")
+    #     # print(f"   domain_loss: {model.domain_loss:.6f}")
+    #     print(f"   max_num_of_node: {model.max_num_of_node}")
 
-    # print("best_model is models[0]", best_model == models[0])
-    # print("best_model.error_history:", best_model.error_history)
-    # print("best_model.min_rmse_loss:", best_model.min_rmse_loss)
-    # print("best_model.best_rmse:", best_model.best_rmse)
-    # print("models[0].error_history:", models[0].error_history)
-    # print("models[0].min_rmse_loss:", models[0].min_rmse_loss)
-    # print("models[0].best_rmse:", models[0].best_rmse)
-    return models[0], stats
+    # return models[0], stats
+    # print("best_models:", best_models)
+    return best_models, stats
