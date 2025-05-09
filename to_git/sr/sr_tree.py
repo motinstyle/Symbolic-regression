@@ -232,6 +232,10 @@ class Tree:
         self.error_is_set = False
         
         self.error = 0
+
+        # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        self.mse = 0
+
         self.forward_loss = 0
         self.inv_loss = 0
         self.abs_loss = 0
@@ -423,6 +427,10 @@ class Tree:
         """Reset all losses to zero"""
         self.error_is_set = False
         self.error = 0
+
+        # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        self.mse = 0
+
         self.forward_loss = 0
         self.inv_loss = 0
         self.abs_loss = 0
@@ -545,19 +553,35 @@ class Tree:
         y_pred = self.forward(X)
 
         try:
-            if forward_error:
-                # # evaluate tree on whole dataset
-                # y_pred = self.forward(X)
+            # Calculate forward_loss in any case (RMSE)
+            # forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+            forward_loss = torch.mean((y_pred - y_true) ** 2).item()
+            if np.isinf(self.forward_loss):
+                print("forward_loss is inf for model:", self.to_math_expr())
+            elif np.isnan(self.forward_loss):
+                print("forward_loss is nan for model:", self.to_math_expr())
 
-                # Calculate forward_loss in any case (RMSE)
-                # forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
-                forward_loss = torch.mean((y_pred - y_true) ** 2).item()
-                if np.isinf(self.forward_loss):
-                    print("forward_loss is inf for model:", self.to_math_expr())
-                elif np.isnan(self.forward_loss):
-                    print("forward_loss is nan for model:", self.to_math_expr())
+            # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+            self.mse = forward_loss
+            if forward_error:
                 self.forward_loss = forward_loss
                 error += forward_loss
+            # if forward_error:
+            #     # # evaluate tree on whole dataset
+            #     # y_pred = self.forward(X)
+
+            #     # Calculate forward_loss in any case (RMSE)
+            #     # forward_loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+            #     forward_loss = torch.mean((y_pred - y_true) ** 2).item()
+            #     if np.isinf(self.forward_loss):
+            #         print("forward_loss is inf for model:", self.to_math_expr())
+            #     elif np.isnan(self.forward_loss):
+            #         print("forward_loss is nan for model:", self.to_math_expr())
+
+            #     # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+            #     self.forward_loss = forward_loss
+            #     error += forward_loss
 
             if inv_error:
                 # Calculate inversion error only if it's required
@@ -1735,6 +1759,10 @@ def mutation_constant(tree: Tree):
 def get_stats(models, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error):
     """Calculate RMSE statistics for a list of models"""
     errors = [model.error for model in models]  # Already RMSE values
+
+    # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    mse_errors = [model.mse for model in models]
+
     forward_errors = [model.forward_loss for model in models] if requires_forward_error else None
     inv_errors = [model.inv_loss for model in models] if requires_inv_error else None
     abs_errors = [model.abs_loss for model in models] if requires_abs_error else None
@@ -1749,6 +1777,11 @@ def get_stats(models, requires_forward_error, requires_inv_error, requires_abs_e
         'mean_error': np.mean(errors),
         'median_error': np.median(errors),
         'best_error': min(errors),
+
+        # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        'mean_mse': np.mean(mse_errors),
+        'median_mse': np.median(mse_errors),
+        'best_mse': min(mse_errors),
 
         'mean_forward_loss': np.mean(forward_errors) if requires_forward_error else None,
         'median_forward_loss': np.median(forward_errors) if requires_forward_error else None,
@@ -2078,6 +2111,11 @@ def evolution(num_of_epochs,
     mean_sum_of_losses_arr = np.zeros(num_of_epochs)
     median_sum_of_losses_arr = np.zeros(num_of_epochs)
     best_sum_of_losses_arr = np.zeros(num_of_epochs)
+
+    # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    mean_mse_arr = np.zeros(num_of_epochs)
+    median_mse_arr = np.zeros(num_of_epochs)
+    best_mse_arr = np.zeros(num_of_epochs)
     
     if requires_forward_error:
         mean_forward_loss_arr = np.zeros(num_of_epochs)
@@ -2274,6 +2312,11 @@ def evolution(num_of_epochs,
         median_sum_of_losses_arr[epoch] = epoch_stats['median_error']
         best_sum_of_losses_arr[epoch] = epoch_stats['best_error']
 
+        # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        mean_mse_arr[epoch] = epoch_stats['mean_mse']
+        median_mse_arr[epoch] = epoch_stats['median_mse']
+        best_mse_arr[epoch] = epoch_stats['best_mse']
+
         if requires_forward_error:
             mean_forward_loss_arr[epoch] = epoch_stats['mean_forward_loss']
             median_forward_loss_arr[epoch] = epoch_stats['median_forward_loss']
@@ -2305,8 +2348,8 @@ def evolution(num_of_epochs,
             best_front = models
 
         best_models : Dict[str, Tree] = {}
-        all_criterions = ["error", "forward_loss", "inv_loss", "abs_loss", "spatial_abs_loss"]
-        required_criterions = [True, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error] # True means that the error criterion is always required
+        all_criterions = ["error", "mse", "forward_loss", "inv_loss", "abs_loss", "spatial_abs_loss"]
+        required_criterions = [True, False, requires_forward_error, requires_inv_error, requires_abs_error, requires_spatial_abs_error] # True means that the error criterion is always required
         for criterion in all_criterions:
             if required_criterions[all_criterions.index(criterion)]:
                 best_models[criterion] = min(best_front, key=lambda model: getattr(model, criterion))
@@ -2320,6 +2363,11 @@ def evolution(num_of_epochs,
         "mean_error_arr": mean_sum_of_losses_arr,
         "median_error_arr": median_sum_of_losses_arr,
         "best_error_arr": best_sum_of_losses_arr,
+
+        # MSE stats here ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        "mean_mse_arr": mean_mse_arr,
+        "median_mse_arr": median_mse_arr,
+        "best_mse_arr": best_mse_arr,
 
         "mean_forward_loss_arr": mean_forward_loss_arr if requires_forward_error else None,
         "median_forward_loss_arr": median_forward_loss_arr if requires_forward_error else None,

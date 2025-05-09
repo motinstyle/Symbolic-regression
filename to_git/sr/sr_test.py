@@ -667,6 +667,11 @@ def save_model_results(models: Dict[str, Tree],
         header = ['Epoch']
         if rmse_stats['mean_error_arr'] is not None:
             header.extend(['Mean Error', 'Median Error', 'Best Error'])
+
+        # add MSE stats here /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        if rmse_stats['mean_mse_arr'] is not None:
+            header.extend(['Mean MSE', 'Median MSE', 'Best MSE'])
+
         if rmse_stats['mean_forward_loss_arr'] is not None:
             header.extend(['Mean Forward Loss', 'Median Forward Loss', 'Best Forward Loss'])
         if rmse_stats['mean_inv_loss_arr'] is not None:
@@ -688,6 +693,14 @@ def save_model_results(models: Dict[str, Tree],
                     str(rmse_stats['mean_error_arr'][epoch]),
                     str(rmse_stats['median_error_arr'][epoch]),
                     str(rmse_stats['best_error_arr'][epoch])
+                ])
+
+            # add MSE stats here /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+            if rmse_stats['mean_mse_arr'] is not None:
+                row.extend([
+                    str(rmse_stats['mean_mse_arr'][epoch]),
+                    str(rmse_stats['median_mse_arr'][epoch]),
+                    str(rmse_stats['best_mse_arr'][epoch])
                 ])
             
             if rmse_stats['mean_forward_loss_arr'] is not None:
